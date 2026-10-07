@@ -10,6 +10,8 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://github.com/Mal-Suen/BiliCommentManager)
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
+**[在线介绍页 / Project page](https://mal-suen.github.io/BiliCommentManager/)**
+
 </div>
 
 ---
