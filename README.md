@@ -2,9 +2,9 @@
 
 <div align="center">
 
-**Bulk-manage & delete your own Bilibili comments**
+**Bulk-manage & delete your own Bilibili comments — your black-history cleaner**
 
-**B 站个人评论批量管理：扫码登录、全量拉取、时间段筛选、低频删除**
+**B 站个人评论管理器（黑历史管理器）：扫码登录、全量拉取、时间段筛选、低频删除**
 
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://github.com/Mal-Suen/BiliCommentManager)
@@ -38,6 +38,7 @@
 | **Keep list** | Mark comments to preserve (e.g. keepsakes) before bulk deletion |
 | **Paced deletion** | Random 5-12 s per comment, 30-60 s pause every 20 comments, automatic stop-and-save on risk-control signals; resumable |
 | **Real-time progress** | The data file is rewritten after every single deletion, so the GUI progress bar reflects true state; background tasks survive closing the window |
+| **Full snapshot view** | A read-only "view all comments" mode shows the complete inventory frozen at snapshot time — it never changes as deletion proceeds, so you can still review your full history afterwards |
 | **Two deployment modes** | Single exe (zero setup) or from source (auditable) |
 
 ### How It Works & Honest Limitations
@@ -64,9 +65,10 @@ python bili_comment_manager.py      # CLI: login / fetch / list / keep / delete
 ### Usage
 
 1. Click **扫码登录** — a QR code pops up; scan with the Bilibili mobile app and confirm. The cookie is written automatically (re-scan when it expires).
-2. Click **重新拉取** — full history is fetched in the background (~1 hour for ~1700 comments; progress shown live).
+2. Click **重新拉取** — full history is fetched in the background (slow due to third-party API rate limits: ~1 hour for ~1700 comments; progress shown live; you can close the window).
 3. Filter by date range / type / keyword; mark keepers with the **保留** button.
 4. Click **开始删除（当前筛选）** — confirm the dialog (shows count and ETA), watch the progress bar. Stop anytime; re-run to continue.
+5. Click **查看全量评论** — switch to the read-only snapshot view: the complete inventory, frozen, unaffected by deletion — review your full history even after wiping it.
 
 ### Project Structure
 
@@ -99,6 +101,7 @@ BiliCommentManager/
 | **保留名单** | 批量删除前标记想保留的评论（如纪念性评论） |
 | **低频删除** | 每条随机 5-12 秒、每 20 条休息 30-60 秒；风控信号自动中止并保存进度；支持续跑 |
 | **实时进度** | 每删一条即回写数据文件，进度条反映真实状态；关闭界面后台任务照常运行 |
+| **全量快照视图** | 只读的「查看全量评论」模式：完整清单冻结于快照时刻，不随删除进度变化——删除后仍可回看全部历史 |
 | **两种部署** | 单文件 exe（零门槛）或源码部署（可审查） |
 
 ### 工作原理与诚实声明
@@ -125,9 +128,10 @@ python bili_comment_manager.py      # 命令行：login / fetch / list / keep / 
 ### 使用流程
 
 1. 点**扫码登录**——二维码自动弹出，手机 B 站 App 扫码确认，Cookie 自动写入（过期重扫即可）
-2. 点**重新拉取**——后台拉取全部评论（约 1700 条需 1 小时左右，进度实时显示）
+2. 点**重新拉取**——后台拉取全部评论（因接口限流速度较慢，约 1700 条需 1 小时左右，进度实时显示，期间可关闭窗口）
 3. 按日期/类型/关键词筛选；用**保留**按钮标记想留的评论
 4. 点**开始删除（当前筛选）**——确认弹窗（显示条数与预计耗时）后开始，进度条实时推进；随时可停，重开续跑
+5. 点**查看全量评论**——切换到只读快照视图：完整清单不随删除变化，删除后仍可回看全部历史
 
 ### 项目结构
 

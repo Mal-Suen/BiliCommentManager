@@ -79,10 +79,30 @@ def save_live(comments, uid):
 
 
 def make_snapshot():
+    """追加式快照：已有条目状态冻结（不随删除变化），只并入新抓到的评论。"""
     with file_lock:
         if not LIVE.exists():
             return False, "my_comments.json 不存在，请先运行 fetch"
-        shutil.copyfile(LIVE, BACKUP)
+        try:
+            live = json.loads(LIVE.read_text(encoding="utf-8"))
+            live_comments = live.get("comments", {})
+        except Exception:
+            return False, "读取 my_comments.json 失败"
+        backup = {}
+        if BACKUP.exists():
+            try:
+                backup = json.loads(BACKUP.read_text(encoding="utf-8")).get("comments", {})
+            except Exception:
+                backup = {}
+        merged = dict(backup)
+        for k, v in live_comments.items():
+            if k not in merged:
+                merged[k] = v
+        tmp = BACKUP.with_suffix(".tmp")
+        tmp.write_text(json.dumps(
+            {"uid": live.get("uid"), "comments": merged},
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(BACKUP)
         return True, None
 
 
@@ -205,7 +225,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
             self._send(200, HTML_PAGE, "text/html; charset=utf-8")
-        elif self.path == "/api/data":
+        elif self.path.startswith("/api/data"):
+            if "view=full" in self.path:
+                backup = load_json(BACKUP) if BACKUP.exists() else None
+                items = [dict(c) for c in (backup or {}).values()]
+                items.sort(key=lambda c: c.get("time", 0))
+                deleted = sum(1 for c in items if c.get("deleted"))
+                kept = sum(1 for c in items if c.get("keep") and not c.get("deleted"))
+                self._json({
+                    "comments": items, "full": True,
+                    "stats": {
+                        "total": len(items), "deleted": deleted, "kept": kept,
+                        "pending": len(items) - deleted - kept,
+                        "oldest": datetime.fromtimestamp(items[0]["time"]).strftime("%Y-%m-%d") if items and items[0].get("time") else None,
+                        "newest": datetime.fromtimestamp(items[-1]["time"]).strftime("%Y-%m-%d") if items and items[-1].get("time") else None,
+                        "backup_at": datetime.fromtimestamp(BACKUP.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if BACKUP.exists() else None,
+                        "has_live": LIVE.exists(),
+                    },
+                })
+                return
             items, live = build_view()
             deleted = sum(1 for c in items if c.get("deleted"))
             kept = sum(1 for c in items if c.get("keep") and not c.get("deleted"))
@@ -406,6 +444,8 @@ border-radius:var(--radius);padding:24px;width:420px}
 #toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);
 background:var(--card);border:1px solid var(--border);border-radius:10px;
 padding:9px 18px;font-size:13px;z-index:30;display:none}
+#view-banner{margin:0 24px;padding:9px 14px;border:1px solid rgba(224,185,62,.35);
+background:rgba(224,185,62,.08);border-radius:8px;color:var(--yellow);font-size:12.5px}
 .empty{padding:60px 24px;text-align:center;color:var(--muted)}
 </style>
 </head>
@@ -415,8 +455,8 @@ padding:9px 18px;font-size:13px;z-index:30;display:none}
   <div class="chips" id="stats"></div>
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
-    <button id="btn-snapshot" title="把当前源文件复制为全量快照（展示基准）">刷新快照</button>
-    <button id="btn-fetch" title="后台全量重新拉取，约 1 小时">重新拉取</button>
+    <button id="btn-fetch" title="后台全量重新拉取全部评论，因接口限流约需 1 小时">重新拉取</button>
+    <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
   </div>
 </header>
 
@@ -441,7 +481,7 @@ padding:9px 18px;font-size:13px;z-index:30;display:none}
     <option value="desc">新→旧</option></select></label>
 </section>
 
-<main><div id="table-wrap"></div><div class="pager" id="pager"></div></main>
+<main><div id="view-banner" style="display:none"></div><div id="table-wrap"></div><div class="pager" id="pager"></div></main>
 
 <div id="bar">
   <span id="bar-info">加载中…</span>
@@ -456,7 +496,7 @@ padding:9px 18px;font-size:13px;z-index:30;display:none}
 
 <script>
 const PER = 100;
-let DATA = [], page = 1, lastSig = '', deleting = false;
+let DATA = [], page = 1, lastSig = '', deleting = false, fullView = false, fetchWasRunning = false;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -562,18 +602,28 @@ function renderTable(){
 function goPage(p){ page = p; renderTable(); }
 
 async function loadData(){
-  const r = await fetch('/api/data');
+  const r = await fetch('/api/data' + (fullView ? '?view=full' : ''));
   const j = await r.json();
   DATA = j.comments;
   renderStats(j.stats);
   renderTable();
-  if(!j.stats.backup_at && j.stats.total){
+  const banner = $('view-banner');
+  if(fullView){
+    banner.style.display = '';
+    banner.textContent = '全量快照视图：完整评论清单，不随删除进度变化'
+      + (j.stats.backup_at ? `（快照时间 ${j.stats.backup_at}）` : '')
+      + '——点右上角「返回实时视图」查看删除进度';
+  } else {
+    banner.style.display = 'none';
+  }
+  if(!j.stats.backup_at && j.stats.total && !fullView){
     fetch('/api/snapshot', {method:'POST'});  // 首次自动快照
     toast('已自动创建全量快照');
   }
 }
 
 async function toggleKeep(rpid, value){
+  if(fullView){ toast('全量视图为只读快照，请先点「返回实时视图」再操作'); return; }
   if(deleting){ toast('删除进行中，暂不能修改保留标记'); return; }
   const r = await fetch('/api/keep', {method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -598,20 +648,29 @@ $('btn-login').onclick = async ()=>{
              : (j.error||'失败'), 4000);
 };
 
-$('btn-snapshot').onclick = async ()=>{
-  const r = await fetch('/api/snapshot', {method:'POST'});
-  const j = await r.json();
-  toast(j.ok ? '快照已刷新（全量展示基准已更新）' : (j.error||'失败'));
-  if(j.ok) loadData();
+$('btn-full').onclick = async ()=>{
+  fullView = !fullView;
+  if(fullView){
+    $('btn-full').textContent = '返回实时视图';
+    toast('全量快照视图：完整评论清单，不随删除进度变化，删除后仍可回看全部历史', 4500);
+  } else {
+    $('btn-full').textContent = '查看全量评论';
+    toast('已返回实时视图');
+  }
+  page = 1;
+  await loadData();
 };
 
 $('btn-fetch').onclick = async ()=>{
   const r = await fetch('/api/fetch', {method:'POST'});
   const j = await r.json();
-  toast(j.ok ? '已在后台开始全量拉取（约 1 小时），进度见底部' : (j.error||'失败'));
+  toast(j.ok
+    ? '全量拉取已开始：因第三方接口限流，拉取速度较慢（约 1700 条需 1 小时）。任务在后台运行，可关闭窗口，进度见底部'
+    : (j.error||'失败'), 6500);
 };
 
 $('btn-del').onclick = ()=>{
+  if(fullView){ toast('全量视图为只读快照，请先点「返回实时视图」再删除'); return; }
   const list = filtered().filter(c=>statusOf(c)==='pending');
   if(!list.length){ toast('当前筛选没有待删评论'); return; }
   if(deleting){ toast('已有删除任务在运行'); return; }
@@ -625,9 +684,9 @@ $('btn-del').onclick = ()=>{
     `<p>时间范围：<b>${range}</b>${kw?`｜关键词：<b>${esc(kw)}</b>`:''}`+
     `${tp!=='all'?`｜类型：<b>${TYPEN[tp]||tp}</b>`:''}</p>`+
     `<p>本轮将删除 <b>${list.length}</b> 条评论，<b style="color:var(--red)">不可恢复</b>。</p>`+
-    `<p>低频删除（每条 5-12 秒随机间隔，每 20 条休息 30-60 秒），`+
+    `<p>因 B 站接口限制采用低频删除（每条随机 5-12 秒、每 20 条休息 30-60 秒），`+
     `预计耗时约 <b>${Math.round(list.length*8.5/60)} 分钟</b>。`+
-    `任务在后台独立运行，关闭本页面不影响。</p>`+
+    `任务在后台独立运行，关闭本页面不影响，可随时停止、重开续跑。</p>`+
     `<div class="acts"><button onclick="closeModal()">取消</button>`+
     `<button class="danger" onclick="doDelete()">确认删除</button></div>`+
     `</div></div>`;
@@ -683,10 +742,18 @@ async function poll(){
         $('prog').style.display = 'none';
         $('prog-text').textContent = '扫码登录中…' + (j.last_line ? '｜' + j.last_line : '');
       } else if(f.running){
+        fetchWasRunning = true;
         $('prog').style.display = '';
         $('prog-text').textContent = j.fetch.count
           ? `后台拉取中：第 ${j.fetch.page} 页，累计 ${j.fetch.count} 条`
           : (j.last_line || '拉取任务启动中…');
+      } else if(fetchWasRunning){
+        fetchWasRunning = false;
+        fetch('/api/snapshot', {method:'POST'});  // 拉取完成，新评论并入全量快照
+        toast('拉取完成，全量快照已更新（新评论已并入）');
+        loadData();
+        $('prog').style.display = 'none';
+        $('prog-text').textContent = '';
       } else {
         $('prog').style.display = 'none';
         $('prog-text').textContent = '';
