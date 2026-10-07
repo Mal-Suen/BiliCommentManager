@@ -1,0 +1,25 @@
+# 个人数据（绝不入库/分发）
+cookie.txt
+buvid_snippet.txt
+refresh_token.txt
+my_comments.json
+comments_backup.json
+cleaner_log.txt
+login_qr.png
+评论清单_全部.txt
+评论片段预览.txt
+
+# 运行时产物
+*.pid
+*.tmp
+
+# 构建产物
+build/
+build-venv/
+dist/
+__pycache__/
+*.exe
+*.zip
+
+# 本地发布包（可由源码重新组装）
+发布包/
