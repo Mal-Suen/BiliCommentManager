@@ -67,21 +67,28 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-try:
-    import requests
-except ImportError:
-    sys.exit("缺少 requests 库，请先执行：pip install requests")
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(errors="replace")
-    sys.stderr.reconfigure(errors="replace")
-
 # 冻结（PyInstaller exe）模式下数据文件放 exe 旁边；源码模式放脚本旁边
 SCRIPT_DIR = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
               else Path(__file__).resolve().parent)
 COOKIE_FILE = SCRIPT_DIR / "cookie.txt"
 DATA_FILE = SCRIPT_DIR / "my_comments.json"
 LOG_FILE = SCRIPT_DIR / "cleaner_log.txt"
+
+try:
+    import requests
+except ImportError:
+    # GUI 拉起的 worker 无控制台且 stderr 被丢弃，退出原因必须落日志才能被界面看到
+    try:
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 任务无法启动："
+                    f"当前 Python（{sys.executable}）缺少 requests 库，"
+                    "请给它执行 pip install requests，或改用 BiliCommentManager.exe\n")
+    finally:
+        sys.exit("缺少 requests 库，请先执行：pip install requests")
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -343,6 +350,14 @@ def save_data(uid, comments):
     }
     tmp = DATA_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    # Windows：界面进程正在读 DATA_FILE 时 replace 会报 PermissionError（共享冲突），
+    # 退避重试等读方松手，避免删除任务无声中断
+    for attempt in range(10):
+        try:
+            tmp.replace(DATA_FILE)
+            return
+        except PermissionError:
+            time.sleep(0.05 * (2 ** min(attempt, 5)))
     tmp.replace(DATA_FILE)
 
 
@@ -645,5 +660,24 @@ def main():
     args.func(args)
 
 
+def run_main():
+    # GUI 拉起的 worker 无控制台：任何退出路径都必须先落日志，否则界面只看到任务无声消失
+    # （源码模式由 __main__ 调用；冻结 exe 由 bili_comment_gui 的 --worker 分支调用）
+    try:
+        main()
+    except SystemExit as e:
+        if isinstance(e.code, str) and e.code.strip():
+            log(f"任务退出：{e.code}")
+            sys.exit(1)
+        sys.exit(e.code)
+    except KeyboardInterrupt:
+        log("收到中断，退出")
+        sys.exit(130)
+    except Exception:
+        import traceback
+        log("任务发生未捕获异常：\n" + traceback.format_exc())
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    run_main()

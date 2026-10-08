@@ -20,6 +20,7 @@ python bili_comment_gui.py
 
 import ctypes
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -49,6 +50,21 @@ GUI_PID = SCRIPT_DIR / "gui.pid"
 TYPE_NAMES = {1: "视频", 11: "带图动态", 12: "专栏", 17: "动态"}
 DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
 
+# 源码模式下 worker 与 GUI 用同一个解释器：requests 缺失时界面一切正常，
+# 但「登录/拉取/删除」任务会秒死。启动时探测一次，页面顶部红条警示
+# （exe 自带依赖，无需检查）
+WORKER_WARNING = None
+if not FROZEN:
+    try:
+        import importlib.util
+        if importlib.util.find_spec("requests") is None:
+            WORKER_WARNING = (f"当前 Python（{sys.executable}）缺少 requests 库："
+                              "界面可用，但扫码登录 / 重新拉取 / 开始删除会立即失败。"
+                              "请改用 BiliCommentManager.exe，"
+                              "或给该 Python 执行 pip install requests")
+    except Exception:
+        pass
+
 file_lock = threading.Lock()
 delete_proc = None
 fetch_proc = None
@@ -58,14 +74,30 @@ login_proc = None
 # ---------- 文件读写 ----------
 
 def load_json(path):
-    with file_lock:
+    # worker 每删一条就原子替换数据文件，读取撞上替换的瞬间会共享冲突，短暂重试即可
+    for attempt in range(4):
         if not path.exists():
             return None
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            with file_lock:
+                raw = json.loads(path.read_text(encoding="utf-8"))
             return {int(k): v for k, v in raw.get("comments", {}).items()}
         except Exception:
-            return None
+            if attempt == 3:
+                return None
+            time.sleep(0.05)
+    return None
+
+
+def replace_with_retry(tmp, dst, tries=10):
+    """Windows：并发读 dst 时 replace 报 PermissionError（共享冲突），退避重试。"""
+    for attempt in range(tries):
+        try:
+            tmp.replace(dst)
+            return
+        except PermissionError:
+            time.sleep(0.05 * (2 ** min(attempt, 5)))
+    tmp.replace(dst)
 
 
 def save_live(comments, uid):
@@ -75,7 +107,7 @@ def save_live(comments, uid):
             {"uid": uid, "fetched_at": datetime.now().isoformat(timespec="seconds"),
              "comments": {str(k): v for k, v in comments.items()}},
             ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(LIVE)
+        replace_with_retry(tmp, LIVE)
 
 
 def make_snapshot():
@@ -102,7 +134,7 @@ def make_snapshot():
         tmp.write_text(json.dumps(
             {"uid": live.get("uid"), "comments": merged},
             ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(BACKUP)
+        replace_with_retry(tmp, BACKUP)
         return True, None
 
 
@@ -199,10 +231,19 @@ def parse_progress():
 
 def spawn(cmd, pidfile):
     global delete_proc, fetch_proc
-    proc = subprocess.Popen(
-        cmd, creationflags=DETACHED,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL, cwd=str(SCRIPT_DIR))
+    # 剥离 _MEIPASS2：exe 自调用时不再复用 GUI 的临时解包目录，
+    # 关闭 GUI 窗口不会连带清掉 worker 正在使用的文件
+    env = {k: v for k, v in os.environ.items() if k != "_MEIPASS2"}
+    env["PYTHONIOENCODING"] = "utf-8"  # worker 的 stderr 将并入 UTF-8 日志
+    # worker 无控制台：stderr 并入任务日志，退出消息/堆栈才能被界面看到
+    err = open(LOG, "ab")
+    try:
+        proc = subprocess.Popen(
+            cmd, creationflags=DETACHED, env=env,
+            stdout=subprocess.DEVNULL, stderr=err,
+            stdin=subprocess.DEVNULL, cwd=str(SCRIPT_DIR))
+    finally:
+        err.close()
     pidfile.write_text(str(proc.pid), encoding="utf-8")
     return proc
 
@@ -259,7 +300,8 @@ class Handler(BaseHTTPRequestHandler):
                 "backup_at": datetime.fromtimestamp(BACKUP.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if BACKUP.exists() else None,
                 "has_live": live is not None,
             }
-            self._json({"comments": items, "stats": stats})
+            self._json({"comments": items, "stats": stats,
+                        "worker_warning": WORKER_WARNING})
         elif self.path == "/api/progress":
             items, _ = build_view()
             deleted = sum(1 for c in items if c.get("deleted"))
@@ -271,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
                 "delete": prog["delete"], "fetch": prog["fetch"],
                 "login": prog["login"],
                 "last_line": prog["last_line"],
+                "worker_warning": WORKER_WARNING,
             })
         else:
             self._send(404, "not found", "text/plain; charset=utf-8")
@@ -286,6 +329,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/keep":
             if task_alive(delete_proc, DEL_PID):
                 self._json({"ok": False, "error": "删除任务进行中，暂不能修改保留标记"})
+                return
+            if task_alive(fetch_proc, FETCH_PID):
+                self._json({"ok": False, "error": "拉取任务进行中，暂不能修改保留标记"})
                 return
             live = load_json(LIVE)
             if live is None:
@@ -313,6 +359,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/delete":
             if task_alive(delete_proc, DEL_PID):
                 self._json({"ok": False, "error": "已有删除任务在运行"})
+                return
+            if task_alive(fetch_proc, FETCH_PID):
+                self._json({"ok": False, "error": "拉取任务进行中，请等它完成后再删除"
+                                                 "（两者同时写数据文件会互相冲突）"})
+                return
+            if WORKER_WARNING:
+                self._json({"ok": False, "error": WORKER_WARNING})
                 return
             if not LIVE.exists():
                 self._json({"ok": False, "error": "数据文件不存在，请先拉取"})
@@ -350,6 +403,13 @@ class Handler(BaseHTTPRequestHandler):
             if task_alive(fetch_proc, FETCH_PID):
                 self._json({"ok": False, "error": "已有拉取任务在运行"})
                 return
+            if task_alive(delete_proc, DEL_PID):
+                self._json({"ok": False, "error": "删除任务进行中，请等它完成后再拉取"
+                                                 "（两者同时写数据文件会互相冲突）"})
+                return
+            if WORKER_WARNING:
+                self._json({"ok": False, "error": WORKER_WARNING})
+                return
             args = TASK_PREFIX + ["fetch"]
             fetch_proc = spawn(args, FETCH_PID)
             self._json({"ok": True, "pid": fetch_proc.pid})
@@ -357,6 +417,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/login":
             if task_alive(login_proc, LOGIN_PID):
                 self._json({"ok": False, "error": "已有登录任务在运行"})
+                return
+            if WORKER_WARNING:
+                self._json({"ok": False, "error": WORKER_WARNING})
                 return
             args = TASK_PREFIX + ["login"]  # 默认自动弹出二维码图片
             login_proc = spawn(args, LOGIN_PID)
@@ -446,6 +509,8 @@ background:var(--card);border:1px solid var(--border);border-radius:10px;
 padding:9px 18px;font-size:13px;z-index:30;display:none}
 #view-banner{margin:0 24px;padding:9px 14px;border:1px solid rgba(224,185,62,.35);
 background:rgba(224,185,62,.08);border-radius:8px;color:var(--yellow);font-size:12.5px}
+#env-banner{margin:10px 24px 0;padding:9px 14px;border:1px solid rgba(229,72,77,.4);
+background:rgba(229,72,77,.08);border-radius:8px;color:var(--red);font-size:12.5px}
 .empty{padding:60px 24px;text-align:center;color:var(--muted)}
 </style>
 </head>
@@ -459,6 +524,8 @@ background:rgba(224,185,62,.08);border-radius:8px;color:var(--yellow);font-size:
     <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
   </div>
 </header>
+
+<div id="env-banner" style="display:none"></div>
 
 <section class="filters">
   <label>从 <input type="date" id="f-from"></label>
@@ -520,6 +587,12 @@ function statusOf(c){
 function toast(msg, ms=2600){
   const t = $('toast'); t.textContent = msg; t.style.display = 'block';
   clearTimeout(t._h); t._h = setTimeout(()=>t.style.display='none', ms);
+}
+
+function showEnv(w){
+  const b = $('env-banner');
+  if(w){ b.style.display = ''; b.textContent = w; }
+  else b.style.display = 'none';
 }
 
 function filtered(){
@@ -604,6 +677,7 @@ function goPage(p){ page = p; renderTable(); }
 async function loadData(){
   const r = await fetch('/api/data' + (fullView ? '?view=full' : ''));
   const j = await r.json();
+  showEnv(j.worker_warning);
   DATA = j.comments;
   renderStats(j.stats);
   renderTable();
@@ -718,6 +792,7 @@ async function poll(){
   try{
     const r = await fetch('/api/progress');
     const j = await r.json();
+    showEnv(j.worker_warning);
     const sig = j.deleted+'/'+j.kept+'/'+j.pending;
     const d = j.delete, f = j.fetch;
     if(d.running){
@@ -777,6 +852,12 @@ poll();
 def main():
     if not FROZEN and not MANAGER.exists():
         sys.exit(f"未找到 {MANAGER}")
+    if WORKER_WARNING:
+        try:
+            with LOG.open("a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 警告：{WORKER_WARNING}\n")
+        except Exception:
+            pass
     port = 8765
     for _ in range(10):
         try:
@@ -819,8 +900,9 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--worker":
         # 冻结模式下 exe 自调用：以命令行模式执行管理器任务
+        # （走 run_main：任何退出原因先落日志再退出，与源码模式一致）
         import bili_comment_manager as mgr
         sys.argv = ["bili_comment_manager.py"] + sys.argv[2:]
-        mgr.main()
+        mgr.run_main()
     else:
         main()
