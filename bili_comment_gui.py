@@ -590,7 +590,7 @@ display:flex;gap:10px;align-items:flex-start}
   <div class="chips" id="stats"></div>
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
-    <button id="btn-fetch" title="后台全量重新拉取全部评论，因接口限流约需 1 小时">重新拉取</button>
+    <button id="btn-fetch" title="后台全量重新拉取全部评论，因接口限流较慢（约每 1700 条需 1 小时）">重新拉取</button>
     <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
   </div>
 </header>
@@ -824,8 +824,12 @@ $('btn-fetch').onclick = async ()=>{
   const j = await r.json();
   if(j.ok){
     fetching = true;
-    toast('全量拉取已开始：因第三方接口限流，约需 1 小时。进度在底部显示，可随时停止；'
-      + '关闭窗口甚至关机都没关系——下次点「重新拉取」会继续补齐，已抓到的不会丢', 8000);
+    // 已有清单时按总量估算（每页 5 条、实测约 10 秒/页）；首次拉取无数据则说明基准
+    const eta = DATA.length ? Math.max(1, Math.round(DATA.length / 5 * 10 / 60)) : null;
+    toast('全量拉取已开始：因第三方接口限流，速度较慢'
+      + (eta ? `，按现有 ${DATA.length} 条估算约需 ${eta} 分钟`
+             : '（时长取决于你的评论总量，约每 1700 条需 1 小时）')
+      + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——下次点「重新拉取」会继续补齐，已抓到的不会丢', 8000);
   } else {
     toast(j.error||'失败', 6500);
   }
@@ -847,7 +851,7 @@ $('btn-del').onclick = ()=>{
     `${tp!=='all'?`｜类型：<b>${TYPEN[tp]||tp}</b>`:''}</p>`+
     `<p>本轮将删除 <b>${list.length}</b> 条评论，<b style="color:var(--red)">不可恢复</b>。</p>`+
     `<p>因 B 站接口限制采用低频删除（每条随机 5-12 秒、每 20 条休息 30-60 秒），`+
-    `预计耗时约 <b>${Math.round(list.length*8.5/60)} 分钟</b>。</p>`+
+    `预计耗时约 <b>${Math.round(list.length*11/60)} 分钟</b>。</p>`+
     `<p>任务在后台独立运行：<b>关闭窗口、甚至关机都没关系</b>——已删除的不会丢，`+
     `下次点「开始删除」会自动从剩余的继续；也可以随时点「停止删除」。</p>`+
     `<div class="acts"><button onclick="closeModal()">取消</button>`+
@@ -906,7 +910,12 @@ async function poll(){
     if(f.running){
       fetching = true;
       if(f.count && f.total && pct === null){ pct = Math.round(f.count/f.total*100); }
-      texts.push(f.count ? `拉取中 ${f.count}/${f.total || '?'} 条（第 ${f.page} 页）`
+      let eta = null;
+      if(f.count && f.total && f.count < f.total){
+        eta = Math.max(1, Math.round((f.total - f.count) / 5 * 10 / 60));
+      }
+      texts.push(f.count ? `拉取中 ${f.count}/${f.total || '?'} 条（第 ${f.page} 页`
+                         + (eta ? `，预计还需约 ${eta} 分钟` : '') + '）'
                          : (j.last_line || '拉取任务启动中…'));
     } else if(fetching){
       fetching = false;
