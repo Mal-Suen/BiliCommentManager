@@ -102,7 +102,8 @@ def replace_with_retry(tmp, dst, tries=10):
 
 def save_live(comments, uid):
     with file_lock:
-        tmp = LIVE.with_suffix(".tmp")
+        # tmp 带 pid：防止与 worker 或其他 GUI 进程的写盘共用同一 tmp 互相覆盖
+        tmp = LIVE.with_name(f"{LIVE.stem}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(
             {"uid": uid, "fetched_at": datetime.now().isoformat(timespec="seconds"),
              "comments": {str(k): v for k, v in comments.items()}},
@@ -115,11 +116,16 @@ def make_snapshot():
     with file_lock:
         if not LIVE.exists():
             return False, "my_comments.json 不存在，请先运行 fetch"
-        try:
-            live = json.loads(LIVE.read_text(encoding="utf-8"))
-            live_comments = live.get("comments", {})
-        except Exception:
-            return False, "读取 my_comments.json 失败"
+        live = None
+        for attempt in range(4):  # 删除任务进行中会周期性替换该文件，撞上就重试
+            try:
+                live = json.loads(LIVE.read_text(encoding="utf-8"))
+                break
+            except Exception:
+                if attempt == 3:
+                    return False, "读取 my_comments.json 失败"
+                time.sleep(0.05)
+        live_comments = live.get("comments", {})
         backup = {}
         if BACKUP.exists():
             try:
@@ -174,13 +180,33 @@ _kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 
 
-def win_proc_alive(pid):
+class _FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_uint),
+                ("dwHighDateTime", ctypes.c_uint)]
+
+
+def win_proc_alive(pid, not_before=None):
+    """not_before 传 pid 文件的写入时间：进程创建时间晚于它 5 秒以上，
+    说明 pid 已被无关进程复用（原 worker 已死）——避免幻影任务与误杀。"""
     try:
         h = _kernel32.OpenProcess(0x00100000 | 0x1000, False, int(pid))  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
         if not h:
             return False
         try:
-            return _kernel32.WaitForSingleObject(h, 0) == 0x102  # WAIT_TIMEOUT = 仍在运行
+            if _kernel32.WaitForSingleObject(h, 0) != 0x102:  # WAIT_TIMEOUT = 仍在运行
+                return False
+            if not_before is not None:
+                creation, exit_t, kernel, user = (_FILETIME(), _FILETIME(),
+                                                  _FILETIME(), _FILETIME())
+                if _kernel32.GetProcessTimes(h, ctypes.byref(creation),
+                                             ctypes.byref(exit_t),
+                                             ctypes.byref(kernel),
+                                             ctypes.byref(user)):
+                    ft = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+                    started = ft / 10_000_000 - 11644473600  # Unix 秒
+                    if started > not_before + 5:
+                        return False
+            return True
         finally:
             _kernel32.CloseHandle(h)
     except Exception:
@@ -194,15 +220,23 @@ def read_pid(path):
         return None
 
 
+def _pidfile_mtime(path):
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return None
+
+
 def task_alive(handle, pidfile):
     global delete_proc, fetch_proc
     if handle is not None and handle.poll() is None:
         return True
     pid = read_pid(pidfile)
-    return pid is not None and win_proc_alive(pid)
+    return pid is not None and win_proc_alive(pid, not_before=_pidfile_mtime(pidfile))
 
 
-def tail_log(n=300):
+def tail_log(n=800):
+    # 800 行：全量抓取约 344 页，窗口太小会把开头的「索引到共 N 条」滚出去导致百分比消失
     try:
         lines = LOG.read_text(encoding="utf-8", errors="replace").strip().splitlines()
         return lines[-n:]
@@ -292,6 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                 kept = sum(1 for c in items if c.get("keep") and not c.get("deleted"))
                 self._json({
                     "comments": items, "full": True,
+                    "worker_warning": WORKER_WARNING,
                     "stats": {
                         "total": len(items), "deleted": deleted, "kept": kept,
                         "pending": len(items) - deleted - kept,
@@ -410,14 +445,14 @@ class Handler(BaseHTTPRequestHandler):
             pid = read_pid(DEL_PID)
             if delete_proc is not None and delete_proc.poll() is None:
                 pid = delete_proc.pid
-            if pid is not None and win_proc_alive(pid):
+            if pid is not None and win_proc_alive(pid, not_before=_pidfile_mtime(DEL_PID)):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                                capture_output=True)
                 stopped.append("删除")
             pid = read_pid(FETCH_PID)
             if fetch_proc is not None and fetch_proc.poll() is None:
                 pid = fetch_proc.pid
-            if pid is not None and win_proc_alive(pid):
+            if pid is not None and win_proc_alive(pid, not_before=_pidfile_mtime(FETCH_PID)):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                                capture_output=True)
                 stopped.append("拉取")

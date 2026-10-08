@@ -412,7 +412,8 @@ def save_data(uid, comments):
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "comments": {str(k): v for k, v in comments.items()},
     }
-    tmp = DATA_FILE.with_suffix(".tmp")
+    # tmp 带 pid：防止并发任务（CLI+GUI、fetch+delete）共用同一 tmp 互相覆盖
+    tmp = DATA_FILE.with_name(f"{DATA_FILE.stem}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     # Windows：界面进程正在读 DATA_FILE 时 replace 会报 PermissionError（共享冲突），
     # 退避重试等读方松手，避免删除任务无声中断
