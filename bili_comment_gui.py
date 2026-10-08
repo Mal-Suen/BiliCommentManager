@@ -576,6 +576,11 @@ padding:9px 18px;font-size:13px;z-index:30;display:none}
 background:rgba(224,185,62,.08);border-radius:8px;color:var(--yellow);font-size:12.5px}
 #env-banner{margin:10px 24px 0;padding:9px 14px;border:1px solid rgba(229,72,77,.4);
 background:rgba(229,72,77,.08);border-radius:8px;color:var(--red);font-size:12.5px}
+#fail-banner{margin:10px 24px 0;padding:9px 14px;border:1px solid rgba(229,72,77,.4);
+background:rgba(229,72,77,.08);border-radius:8px;color:var(--red);font-size:12.5px;
+display:flex;gap:10px;align-items:flex-start}
+#fail-text{flex:1;word-break:break-all}
+#fail-close{cursor:pointer;font-size:16px;line-height:1.2;flex-shrink:0}
 .empty{padding:60px 24px;text-align:center;color:var(--muted)}
 </style>
 </head>
@@ -591,6 +596,7 @@ background:rgba(229,72,77,.08);border-radius:8px;color:var(--red);font-size:12.5
 </header>
 
 <div id="env-banner" style="display:none"></div>
+<div id="fail-banner" style="display:none"><span id="fail-text"></span><span id="fail-close" title="关闭">×</span></div>
 
 <section class="filters">
   <label>从 <input type="date" id="f-from"></label>
@@ -659,6 +665,19 @@ function showEnv(w){
   if(w){ b.style.display = ''; b.textContent = w; }
   else b.style.display = 'none';
 }
+
+// 任务失败原因常驻红条（6 秒 toast 会消失，这里保留到用户关闭或新任务开始）
+const FAIL_RE = /任务终止|任务无法启动|未捕获异常|文件锁占用|检测到另一个任务/;
+function showFail(line){
+  const b = $('fail-banner');
+  if(line && FAIL_RE.test(line)){
+    $('fail-text').textContent = line;
+    b.style.display = 'flex';
+  } else {
+    b.style.display = 'none';
+  }
+}
+$('fail-close').onclick = ()=>{ $('fail-banner').style.display = 'none'; };
 
 function filtered(){
   const from = $('f-from').value, to = $('f-to').value;
@@ -805,8 +824,8 @@ $('btn-fetch').onclick = async ()=>{
   const j = await r.json();
   if(j.ok){
     fetching = true;
-    toast('全量拉取已开始：因第三方接口限流，拉取速度较慢（约 1700 条需 1 小时）。'
-      + '进度显示在底部，可随时停止；关闭窗口不影响任务', 6500);
+    toast('全量拉取已开始：因第三方接口限流，约需 1 小时。进度在底部显示，可随时停止；'
+      + '关闭窗口甚至关机都没关系——下次点「重新拉取」会继续补齐，已抓到的不会丢', 8000);
   } else {
     toast(j.error||'失败', 6500);
   }
@@ -828,8 +847,9 @@ $('btn-del').onclick = ()=>{
     `${tp!=='all'?`｜类型：<b>${TYPEN[tp]||tp}</b>`:''}</p>`+
     `<p>本轮将删除 <b>${list.length}</b> 条评论，<b style="color:var(--red)">不可恢复</b>。</p>`+
     `<p>因 B 站接口限制采用低频删除（每条随机 5-12 秒、每 20 条休息 30-60 秒），`+
-    `预计耗时约 <b>${Math.round(list.length*8.5/60)} 分钟</b>。`+
-    `任务在后台独立运行，关闭本页面不影响，可随时停止、重开续跑。</p>`+
+    `预计耗时约 <b>${Math.round(list.length*8.5/60)} 分钟</b>。</p>`+
+    `<p>任务在后台独立运行：<b>关闭窗口、甚至关机都没关系</b>——已删除的不会丢，`+
+    `下次点「开始删除」会自动从剩余的继续；也可以随时点「停止删除」。</p>`+
     `<div class="acts"><button onclick="closeModal()">取消</button>`+
     `<button class="danger" onclick="doDelete()">确认删除</button></div>`+
     `</div></div>`;
@@ -865,6 +885,7 @@ async function poll(){
     showEnv(j.worker_warning);
     const sig = j.deleted+'/'+j.kept+'/'+j.pending;
     const d = j.delete, f = j.fetch;
+    if(d.running || f.running){ showFail(null); }   // 新任务开始，清掉旧失败提示
     const texts = [];
     let pct = null;
     if(d.running){
@@ -877,6 +898,7 @@ async function poll(){
       if(deleting){
         deleting = false;
         toast('删除任务已结束' + (j.last_line ? '｜' + j.last_line : ''), 6000);
+        showFail(j.last_line);
         loadData();
       }
       $('btn-del').disabled = false;
@@ -891,8 +913,10 @@ async function poll(){
       if(f.done){
         fetch('/api/snapshot', {method:'POST'});  // 拉取完成，新评论并入全量快照
         toast('拉取完成，全量快照已更新（新评论已并入）');
+        showFail(null);
       } else {
         toast('拉取已停止或未启动成功' + (j.last_line ? '｜' + j.last_line : ''), 6000);
+        showFail(j.last_line);
       }
       loadData();
     }

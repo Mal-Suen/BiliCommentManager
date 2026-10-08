@@ -218,8 +218,9 @@ def get_self(session):
     r = session.get(NAV_API, timeout=15)
     data = r.json()
     if data.get("code") != 0 or not (data.get("data") or {}).get("isLogin"):
-        sys.exit(f"Cookie 校验失败（code={data.get('code')} {data.get('message')}），"
-                 "Cookie 可能已过期，请重新从浏览器复制")
+        sys.exit(f"登录已失效（code={data.get('code')} {data.get('message')}）｜"
+                 "怎么办：点「扫码登录」重新扫码；命令行用户：重新运行 login，"
+                 "或从浏览器复制新 Cookie 更新 cookie.txt")
     return int(data["data"]["mid"]), data["data"].get("uname", "")
 
 
@@ -293,7 +294,8 @@ def cmd_login(args):
             if state == 86090:
                 log("已扫码，请在手机上确认登录")
             elif state == 86038:
-                sys.exit("二维码已失效，请重新运行 login")
+                sys.exit("二维码已失效（约 3 分钟有效）｜怎么办：再点一次「扫码登录」；"
+                         "命令行用户：重新运行 login")
             else:
                 log(f"状态 {state}：{d.get('message') or j.get('message')}")
             last_state = state
@@ -339,7 +341,8 @@ def aicu_get(params, max_tries=3):
         if attempt < max_tries:
             wait = random.uniform(15, 30)
             log(f"AICU 第 {attempt}/{max_tries} 轮未成功，等待 {wait:.0f} 秒后重试；"
-                "持续失败请检查代理（如 Clash）是否在运行，或用 --proxy 显式指定")
+                "持续失败请检查代理（如 Clash）是否在运行，或用 --proxy 显式指定"
+                "（如果你开了梯子或代理软件，试试换节点或暂时关掉）")
             time.sleep(wait)
     return None
 
@@ -352,7 +355,8 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0):
         params = {"uid": uid, "pn": page, "ps": ps, "mode": 0, "keyword": ""}
         data = aicu_get(params)
         if data is None:
-            log("AICU 多轮尝试均失败，提前结束抓取（已抓到的数据不受影响）")
+            log("AICU 多轮尝试均失败，提前结束抓取（已抓到的数据不受影响）｜"
+                "怎么办：稍后点「重新拉取」重试，已抓到的不会丢")
             break
         d = data.get("data") or {}
         if total is None:
@@ -623,8 +627,10 @@ def cmd_delete(args):
                 r = session.post(url, data=form, timeout=20)
                 if r.status_code == 412:
                     save_data(uid, comments)
-                    log("任务终止：B 站返回 HTTP 412 风控挑战——请调大 --delay 放慢速度、"
-                        "确认 cookie.txt 是完整 Cookie（含 buvid3），稍后再试；进度已保存")
+                    log("任务终止：B 站风控拦截（HTTP 412，请求太频繁被暂时拦下）｜"
+                        "怎么办：等几个小时再点一次「开始删除」，会从剩余的继续，已删的不受影响｜"
+                        "技术细节：调大 --delay 放慢速度、确认 cookie.txt 是完整 Cookie（含 buvid3）｜"
+                        "进度已保存")
                     sys.exit(1)
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}")
@@ -644,13 +650,15 @@ def cmd_delete(args):
                     f"{type_name(c['type'])} oid={c['oid']}｜{preview(c['message'])}")
             elif code in AUTH_CODES:
                 save_data(uid, comments)
-                log(f"任务终止：Cookie/CSRF 失效（code={code} {res.get('message')}）——"
-                    "请重新运行 login 扫码登录后再跑；进度已保存")
+                log(f"任务终止：登录已失效（code={code} {res.get('message')}）｜"
+                    "怎么办：点界面右上角「扫码登录」重新扫码，再点「开始删除」会接着删｜"
+                    "命令行用户：重新运行 login｜进度已保存")
                 sys.exit(1)
             elif code in RISK_CODES:
                 save_data(uid, comments)
-                log(f"任务终止：触发 B 站风控（code={code} {res.get('message')}）——"
-                    "请调大 --delay 放慢速度，过几小时再跑；进度已保存")
+                log(f"任务终止：触发 B 站风控（code={code} {res.get('message')}）｜"
+                    "怎么办：过几个小时再点一次「开始删除」，会从剩余的继续｜"
+                    "技术细节：调大 --delay 放慢速度｜进度已保存")
                 sys.exit(1)
             else:
                 c["error"] = f"code={code} {res.get('message')}"

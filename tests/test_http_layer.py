@@ -37,7 +37,9 @@ def _post(base, path, body):
 
 def test_html_contains_env_banner(server):
     _, base = server
-    assert 'id="env-banner"' in _get(base, "/")
+    html = _get(base, "/")
+    assert 'id="env-banner"' in html
+    assert 'id="fail-banner"' in html       # 任务失败常驻红条
 
 
 def test_api_data_carries_worker_warning(server):

@@ -16,6 +16,14 @@
 
 ---
 
+> **首次运行必读 / First-run must-read**
+>
+> **中文**：exe 未购买代码签名证书，Windows 首次运行会弹蓝色警告「Windows 已保护你的电脑」——这不是检测到病毒，而是对所有未签名程序的默认提醒：点「**更多信息**」→「**仍要运行**」即可。国内安全软件（360、火绒、电脑管家等）可能误报拦截 PyInstaller 打包的单文件 exe——把 `BiliCommentManager.exe` 加入信任区即可正常使用。本工具开源、全部代码可审查，只访问 `api.bilibili.com` 与评论索引 `api.aicu.cc`，不上传任何数据到其他服务器。
+>
+> **English**: the exe is unsigned (no code-signing certificate), so Windows SmartScreen shows a blue "Windows protected your PC" warning on first run — this is the default prompt for all unsigned programs, not a virus detection: click **More info** → **Run anyway**. Chinese antivirus suites (360 / Huorong / PC Manager) frequently false-flag PyInstaller single-file exes — add `BiliCommentManager.exe` to the trust list. The tool is open source, only ever talks to `api.bilibili.com` and the comment index `api.aicu.cc`, and uploads nothing.
+
+---
+
 ## Table of Contents / 目录
 
 - [English](#english)
