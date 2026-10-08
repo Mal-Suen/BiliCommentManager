@@ -67,6 +67,11 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
+try:
+    import msvcrt
+except ImportError:  # 非 Windows 平台无文件锁
+    msvcrt = None
+
 # 冻结（PyInstaller exe）模式下数据文件放 exe 旁边；源码模式放脚本旁边
 SCRIPT_DIR = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
               else Path(__file__).resolve().parent)
@@ -123,6 +128,64 @@ def log(msg):
     print(line)
     with LOG_FILE.open("a", encoding="utf-8") as f:
         f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+
+
+# ---------- 任务互斥（防 GUI 存活误判导致同类任务双跑） ----------
+
+TASK_LOCK_FDS = {}
+
+
+def acquire_task_lock(name):
+    """文件锁：进程退出（含 taskkill 强杀）锁自动释放，无残留问题。"""
+    if msvcrt is None:
+        return True
+    fd = os.open(str(SCRIPT_DIR / f"gui_{name}.lock"), os.O_CREAT | os.O_RDWR)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        os.close(fd)
+        return False
+    TASK_LOCK_FDS[name] = fd  # fd 持有到进程退出，锁随之释放
+    return True
+
+
+def _pid_running(pid):
+    if pid <= 0:
+        return False
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
+                           capture_output=True, timeout=15)
+    except Exception:
+        return False
+    for line in r.stdout.decode("utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == str(pid):
+            return True
+    return False
+
+
+def refuse_if_task_running(task, label):
+    """worker 启动自查：pid 文件指向的进程还活着，或文件锁被占，则拒绝启动。"""
+    pidfile = SCRIPT_DIR / f"gui_{task}.pid"
+    try:
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+    except Exception:
+        pid = 0
+    own = {os.getpid(), os.getppid()}
+    if pid and pid not in own and _pid_running(pid):
+        sys.exit(f"检测到另一个{label}任务正在运行（pid {pid}）；"
+                 f"如确认没有任务在跑，删除 {pidfile.name} 后重试")
+    if not acquire_task_lock(task):
+        sys.exit(f"已有另一个{label}任务在运行（文件锁占用中）")
+
+
+def heal_pid_file(task):
+    """把自身 pid 写回 GUI 的 pid 文件：被误判的重复 spawn 覆盖后 8 秒内自愈，
+    也让 CLI 直接运行的任务在 GUI 里可见。"""
+    try:
+        (SCRIPT_DIR / f"gui_{task}.pid").write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_cookie():
@@ -319,6 +382,7 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0):
             except (KeyError, ValueError, TypeError):
                 skipped += 1
         log(f"第 {page} 页：{len(replies)} 条，累计 {len(comments)} 条")
+        heal_pid_file("fetch")  # pid 被覆盖后自愈，GUI 进度显示不中断
         if page % 10 == 0:
             save_data(uid, comments)  # 中途落盘：进程崩溃不丢已抓数据，list 可中途查看
         if (d.get("cursor") or {}).get("is_end"):
@@ -440,6 +504,7 @@ def apply_filters(comments, args):
 
 
 def cmd_fetch(args):
+    refuse_if_task_running("fetch", "拉取")
     cookie, _ = load_cookie()
     session = make_bili_session(cookie)
     uid, uname = get_self(session)
@@ -517,6 +582,7 @@ def cmd_keep(args):
 
 
 def cmd_delete(args):
+    refuse_if_task_running("delete", "删除")
     comments, _ = load_data()
     if not comments:
         sys.exit("清单为空，请先运行 fetch")
@@ -547,6 +613,7 @@ def cmd_delete(args):
     ok = fail = 0
     try:
         for i, c in enumerate(pending, 1):
+            heal_pid_file("delete")  # pid 被误判的重复 spawn 覆盖后自愈
             form = {"oid": c["oid"], "type": c["type"], "rpid": c["rpid"], "csrf": csrf}
             url = DEL_API
             if c["type"] == 11:

@@ -12,6 +12,7 @@ login_qr.png
 # 运行时产物
 *.pid
 *.tmp
+*.lock
 
 # 构建产物
 build/

@@ -163,16 +163,26 @@ def build_view():
 
 # ---------- 进程管理 ----------
 
+# 进程存活探测的两个坑：
+# 1) OpenProcess 默认 restype=c_int 会截断 64 位句柄——必须显式 c_void_p；
+# 2) WaitForSingleObject 需要 SYNCHRONIZE 权限，只开 QUERY 会 ERROR_ACCESS_DENIED
+#    （Wait 返回 WAIT_FAILED，活进程被误判为已退出——进度不显示、重复拉起任务的根因）
+_kernel32 = ctypes.windll.kernel32
+_kernel32.OpenProcess.restype = ctypes.c_void_p
+_kernel32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+_kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+
 def win_proc_alive(pid):
     try:
-        k = ctypes.windll.kernel32
-        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        h = _kernel32.OpenProcess(0x00100000 | 0x1000, False, int(pid))  # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
         if not h:
             return False
         try:
-            return k.WaitForSingleObject(h, 0) == 0x102  # WAIT_TIMEOUT = 仍在运行
+            return _kernel32.WaitForSingleObject(h, 0) == 0x102  # WAIT_TIMEOUT = 仍在运行
         finally:
-            k.CloseHandle(h)
+            _kernel32.CloseHandle(h)
     except Exception:
         return False
 
@@ -203,7 +213,7 @@ def tail_log(n=300):
 def parse_progress():
     """从日志尾部解析删除/拉取/登录进度。"""
     d_run, d_i, d_n, d_done = False, None, None, None
-    f_run, f_page, f_count = False, None, None
+    f_run, f_page, f_count, f_total, f_done = False, None, None, None, False
     l_run = False
     last_line = ""
     import re
@@ -218,12 +228,19 @@ def parse_progress():
         m = re.search(r"第 (\d+) 页：\d+ 条，累计 (\d+) 条", line)
         if m:
             f_page, f_count = int(m.group(1)), int(m.group(2))
+            f_done = False  # 新一页出现则此前的完成标记作废
+        m = re.search(r"索引到你的评论共 (\d+) 条", line)
+        if m:
+            f_total = int(m.group(1))
+        if re.search(r"抓取完成|提前结束抓取", line):
+            f_done = True
     d_run = task_alive(delete_proc, DEL_PID)
     f_run = task_alive(fetch_proc, FETCH_PID)
     l_run = task_alive(login_proc, LOGIN_PID)
     return {
         "delete": {"running": d_run, "i": d_i, "n": d_n, "done": d_done},
-        "fetch": {"running": f_run, "page": f_page, "count": f_count},
+        "fetch": {"running": f_run, "page": f_page, "count": f_count,
+                  "total": f_total, "done": f_done},
         "login": {"running": l_run},
         "last_line": last_line,
     }
@@ -389,15 +406,25 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "pid": delete_proc.pid})
 
         elif self.path == "/api/stop":
+            stopped = []
             pid = read_pid(DEL_PID)
             if delete_proc is not None and delete_proc.poll() is None:
                 pid = delete_proc.pid
-            if pid is None or not win_proc_alive(pid):
-                self._json({"ok": False, "error": "没有运行中的删除任务"})
-                return
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                           capture_output=True)
-            self._json({"ok": True})
+            if pid is not None and win_proc_alive(pid):
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                               capture_output=True)
+                stopped.append("删除")
+            pid = read_pid(FETCH_PID)
+            if fetch_proc is not None and fetch_proc.poll() is None:
+                pid = fetch_proc.pid
+            if pid is not None and win_proc_alive(pid):
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                               capture_output=True)
+                stopped.append("拉取")
+            if stopped:
+                self._json({"ok": True, "stopped": "、".join(stopped)})
+            else:
+                self._json({"ok": False, "error": "没有运行中的任务"})
 
         elif self.path == "/api/fetch":
             if task_alive(fetch_proc, FETCH_PID):
@@ -563,7 +590,7 @@ background:rgba(229,72,77,.08);border-radius:8px;color:var(--red);font-size:12.5
 
 <script>
 const PER = 100;
-let DATA = [], page = 1, lastSig = '', deleting = false, fullView = false, fetchWasRunning = false;
+let DATA = [], page = 1, lastSig = '', deleting = false, fetching = false, fullView = false;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -738,9 +765,13 @@ $('btn-full').onclick = async ()=>{
 $('btn-fetch').onclick = async ()=>{
   const r = await fetch('/api/fetch', {method:'POST'});
   const j = await r.json();
-  toast(j.ok
-    ? '全量拉取已开始：因第三方接口限流，拉取速度较慢（约 1700 条需 1 小时）。任务在后台运行，可关闭窗口，进度见底部'
-    : (j.error||'失败'), 6500);
+  if(j.ok){
+    fetching = true;
+    toast('全量拉取已开始：因第三方接口限流，拉取速度较慢（约 1700 条需 1 小时）。'
+      + '进度显示在底部，可随时停止；关闭窗口不影响任务', 6500);
+  } else {
+    toast(j.error||'失败', 6500);
+  }
 };
 
 $('btn-del').onclick = ()=>{
@@ -782,10 +813,11 @@ async function doDelete(){
 }
 
 $('btn-stop').onclick = async ()=>{
-  if(!confirm('确定停止删除任务？已完成的部分不受影响。')) return;
+  const label = $('btn-stop').textContent;
+  if(!confirm(`确定${label}？已完成的部分不受影响。`)) return;
   const r = await fetch('/api/stop', {method:'POST'});
   const j = await r.json();
-  toast(j.ok ? '已发送停止指令' : (j.error||'失败'));
+  toast(j.ok ? `已停止${j.stopped || '任务'}` : (j.error||'失败'));
 };
 
 async function poll(){
@@ -795,16 +827,14 @@ async function poll(){
     showEnv(j.worker_warning);
     const sig = j.deleted+'/'+j.kept+'/'+j.pending;
     const d = j.delete, f = j.fetch;
+    const texts = [];
+    let pct = null;
     if(d.running){
       deleting = true;
       $('btn-del').disabled = true;
-      $('btn-stop').style.display = '';
-      $('prog').style.display = '';
-      const pct = (d.i && d.n) ? Math.round(d.i/d.n*100) : 0;
-      $('prog-fill').style.width = pct+'%';
-      $('prog-text').textContent = d.i
-        ? `删除中 ${d.i}/${d.n}（${pct}%）｜${j.last_line||''}`
-        : (j.last_line || '删除任务启动中…');
+      if(d.i && d.n){ pct = Math.round(d.i/d.n*100); }
+      texts.push(d.i ? `删除中 ${d.i}/${d.n}（${pct}%）｜${j.last_line||''}`
+                     : (j.last_line || '删除任务启动中…'));
     } else {
       if(deleting){
         deleting = false;
@@ -812,28 +842,38 @@ async function poll(){
         loadData();
       }
       $('btn-del').disabled = false;
-      $('btn-stop').style.display = 'none';
-      if(j.login && j.login.running){
-        $('prog').style.display = 'none';
-        $('prog-text').textContent = '扫码登录中…' + (j.last_line ? '｜' + j.last_line : '');
-      } else if(f.running){
-        fetchWasRunning = true;
-        $('prog').style.display = '';
-        $('prog-text').textContent = j.fetch.count
-          ? `后台拉取中：第 ${j.fetch.page} 页，累计 ${j.fetch.count} 条`
-          : (j.last_line || '拉取任务启动中…');
-      } else if(fetchWasRunning){
-        fetchWasRunning = false;
+    }
+    if(f.running){
+      fetching = true;
+      if(f.count && f.total && pct === null){ pct = Math.round(f.count/f.total*100); }
+      texts.push(f.count ? `拉取中 ${f.count}/${f.total || '?'} 条（第 ${f.page} 页）`
+                         : (j.last_line || '拉取任务启动中…'));
+    } else if(fetching){
+      fetching = false;
+      if(f.done){
         fetch('/api/snapshot', {method:'POST'});  // 拉取完成，新评论并入全量快照
         toast('拉取完成，全量快照已更新（新评论已并入）');
-        loadData();
-        $('prog').style.display = 'none';
-        $('prog-text').textContent = '';
       } else {
-        $('prog').style.display = 'none';
-        $('prog-text').textContent = '';
+        toast('拉取已停止或未启动成功' + (j.last_line ? '｜' + j.last_line : ''), 6000);
       }
+      loadData();
     }
+    if(j.login && j.login.running){
+      texts.push('扫码登录中…' + (j.last_line ? '｜' + j.last_line : ''));
+    }
+    const anyTask = d.running || f.running;
+    $('btn-stop').style.display = anyTask ? '' : 'none';
+    if(anyTask){
+      $('btn-stop').textContent = (d.running && f.running) ? '停止全部'
+        : (d.running ? '停止删除' : '停止拉取');
+    }
+    if(pct !== null){
+      $('prog').style.display = '';
+      $('prog-fill').style.width = pct+'%';
+    } else {
+      $('prog').style.display = 'none';
+    }
+    $('prog-text').textContent = texts.join('｜');
     if(sig !== lastSig && !d.running && !f.running){
       lastSig = sig;
       loadData();
