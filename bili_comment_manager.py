@@ -219,7 +219,7 @@ def get_self(session):
     data = r.json()
     if data.get("code") != 0 or not (data.get("data") or {}).get("isLogin"):
         sys.exit(f"登录已失效（code={data.get('code')} {data.get('message')}）｜"
-                 "怎么办：点「扫码登录」重新扫码；命令行用户：重新运行 login，"
+                 "点「扫码登录」重新扫码；命令行用户：重新运行 login，"
                  "或从浏览器复制新 Cookie 更新 cookie.txt")
     return int(data["data"]["mid"]), data["data"].get("uname", "")
 
@@ -294,7 +294,7 @@ def cmd_login(args):
             if state == 86090:
                 log("已扫码，请在手机上确认登录")
             elif state == 86038:
-                sys.exit("二维码已失效（约 3 分钟有效）｜怎么办：再点一次「扫码登录」；"
+                sys.exit("二维码已失效（约 3 分钟有效）｜再点一次「扫码登录」；"
                          "命令行用户：重新运行 login")
             else:
                 log(f"状态 {state}：{d.get('message') or j.get('message')}")
@@ -356,7 +356,7 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0):
         data = aicu_get(params)
         if data is None:
             log("AICU 多轮尝试均失败，提前结束抓取（已抓到的数据不受影响）｜"
-                "怎么办：稍后点「重新拉取」重试，已抓到的不会丢")
+                "稍后点「重新拉取」重试，已抓到的不会丢")
             break
         d = data.get("data") or {}
         if total is None:
@@ -628,7 +628,7 @@ def cmd_delete(args):
                 if r.status_code == 412:
                     save_data(uid, comments)
                     log("任务终止：B 站风控拦截（HTTP 412，请求太频繁被暂时拦下）｜"
-                        "怎么办：等几个小时再点一次「开始删除」，会从剩余的继续，已删的不受影响｜"
+                        "等几个小时再点一次「开始删除」，会从剩余的继续，已删的不受影响｜"
                         "技术细节：调大 --delay 放慢速度、确认 cookie.txt 是完整 Cookie（含 buvid3）｜"
                         "进度已保存")
                     sys.exit(1)
@@ -651,13 +651,13 @@ def cmd_delete(args):
             elif code in AUTH_CODES:
                 save_data(uid, comments)
                 log(f"任务终止：登录已失效（code={code} {res.get('message')}）｜"
-                    "怎么办：点界面右上角「扫码登录」重新扫码，再点「开始删除」会接着删｜"
+                    "点界面右上角「扫码登录」重新扫码，再点「开始删除」会接着删｜"
                     "命令行用户：重新运行 login｜进度已保存")
                 sys.exit(1)
             elif code in RISK_CODES:
                 save_data(uid, comments)
                 log(f"任务终止：触发 B 站风控（code={code} {res.get('message')}）｜"
-                    "怎么办：过几个小时再点一次「开始删除」，会从剩余的继续｜"
+                    "过几个小时再点一次「开始删除」，会从剩余的继续｜"
                     "技术细节：调大 --delay 放慢速度｜进度已保存")
                 sys.exit(1)
             else:
