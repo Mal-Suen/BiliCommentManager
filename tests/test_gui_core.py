@@ -1,0 +1,188 @@
+"""GUI 核心逻辑：进程存活探测（含 pid 复用防护）、文件读写重试、快照合并、进度解析。"""
+
+import json
+import subprocess
+import sys
+import threading
+import time
+
+import bili_comment_gui as gui
+from util import make_comment
+
+
+# ---------- win_proc_alive ----------
+
+def test_win_proc_alive_states():
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert gui.win_proc_alive(p.pid)                          # 活着
+        assert gui.win_proc_alive(p.pid, not_before=time.time() - 5)   # 正常新拉起
+        assert not gui.win_proc_alive(p.pid, not_before=time.time() - 3600)  # pid 复用防护
+    finally:
+        p.kill()
+        p.wait(timeout=10)
+    assert not gui.win_proc_alive(p.pid)                          # 死后判死
+    assert not gui.win_proc_alive(99999999)                       # 不存在的 pid
+
+
+# ---------- replace_with_retry ----------
+
+def test_replace_with_retry_through_held_handle(tmp_path):
+    dst = tmp_path / "dst.json"
+    dst.write_text("old", encoding="utf-8")
+    tmp = tmp_path / "tmp.json"
+    tmp.write_text("new", encoding="utf-8")
+
+    release = threading.Event()
+
+    def holder():
+        with open(dst, encoding="utf-8") as f:
+            release.wait(timeout=5)
+
+    hold_thread = threading.Thread(target=holder)
+    hold_thread.start()
+    time.sleep(0.1)
+
+    result = {}
+
+    def do_replace():
+        t0 = time.time()
+        try:
+            gui.replace_with_retry(tmp, dst)
+            result["ok"] = time.time() - t0
+        except Exception as e:   # noqa: BLE001
+            result["err"] = e
+
+    replace_thread = threading.Thread(target=do_replace)
+    replace_thread.start()
+    time.sleep(0.3)
+    release.set()
+    replace_thread.join(timeout=15)
+    hold_thread.join(timeout=5)
+
+    assert "err" not in result, result["err"]
+    assert result["ok"] > 0.2
+    assert dst.read_text(encoding="utf-8") == "new"
+
+
+# ---------- load_json ----------
+
+def test_load_json_valid_missing_corrupt(tmp_path):
+    p = tmp_path / "f.json"
+    assert gui.load_json(p) is None                       # 文件不存在
+    p.write_text(json.dumps({"comments": {"5": make_comment(5)}}), encoding="utf-8")
+    assert gui.load_json(p) == {5: make_comment(5)}       # 键转 int
+    p.write_text("{corrupt", encoding="utf-8")
+    assert gui.load_json(p) is None                       # 损坏：重试后放弃
+
+
+# ---------- make_snapshot：追加式合并 + 状态冻结 ----------
+
+def test_make_snapshot_freezes_and_appends(gui_env):
+    live = {"uid": "u", "comments": {
+        "1": make_comment(1, deleted=True),
+        "2": make_comment(2, deleted=False),
+    }}
+    (gui_env / "my_comments.json").write_text(json.dumps(live), encoding="utf-8")
+    ok, err = gui.make_snapshot()
+    assert ok and err is None
+
+    # 快照后：2 被删除、新增 3
+    live["comments"]["2"]["deleted"] = True
+    live["comments"]["3"] = make_comment(3)
+    (gui_env / "my_comments.json").write_text(json.dumps(live), encoding="utf-8")
+    ok, _ = gui.make_snapshot()
+
+    backup = json.loads((gui_env / "comments_backup.json").read_text(encoding="utf-8"))
+    bc = backup["comments"]
+    assert set(bc) == {"1", "2", "3"}          # 追加式：新评论并入、永不丢条目
+    assert bc["1"]["deleted"] is True          # 快照时的状态保留
+    assert bc["2"]["deleted"] is False         # 冻结：快照后的删除不改快照
+
+
+def test_make_snapshot_missing_live(gui_env):
+    ok, err = gui.make_snapshot()
+    assert ok is False and "不存在" in err
+
+
+# ---------- build_view：实时状态覆盖快照 ----------
+
+def test_build_view_overlays_live_status(gui_env):
+    backup = {"comments": {"1": make_comment(1, deleted=False),
+                           "2": make_comment(2, deleted=False)}}
+    (gui_env / "comments_backup.json").write_text(json.dumps(backup), encoding="utf-8")
+    live = {"uid": "u", "comments": {"1": make_comment(1, deleted=True),
+                                     "3": make_comment(3)}}
+    (gui_env / "my_comments.json").write_text(json.dumps(live), encoding="utf-8")
+
+    items, live_out = gui.build_view()
+    by_rpid = {c["rpid"]: c for c in items}
+    assert by_rpid[1]["deleted"] is True       # 实时状态覆盖
+    assert by_rpid[2]["deleted"] is False      # live 缺失（AICU 滞后）保持快照值
+    assert 3 in by_rpid                        # 快照后新抓到的并入
+    assert live_out is not None
+
+
+# ---------- parse_progress ----------
+
+def test_parse_progress_delete_and_fetch(gui_env):
+    lines = [
+        "[2026-10-09 00:00:00] 登录校验通过：测试（uid=1）",
+        "[2026-10-09 00:00:01] AICU 索引到你的评论共 100 条，开始分页抓取…",
+        "[2026-10-09 00:00:02] 第 3 页：5 条，累计 15 条",
+        "[2026-10-09 00:00:03] [7/50] 已删除 rpid=1 视频 oid=1｜内容",
+    ]
+    (gui_env / "cleaner_log.txt").write_text("\n".join(lines), encoding="utf-8")
+    prog = gui.parse_progress()
+    assert prog["delete"]["i"] == 7 and prog["delete"]["n"] == 50
+    assert prog["delete"]["running"] is False          # pid 文件不存在 → 不在运行
+    assert prog["fetch"]["page"] == 3
+    assert prog["fetch"]["count"] == 15
+    assert prog["fetch"]["total"] == 100
+    assert prog["fetch"]["running"] is False
+    assert prog["last_line"].endswith("内容")
+
+
+def test_parse_progress_fetch_done_and_reset(gui_env):
+    base = [
+        "[2026-10-09 00:00:00] AICU 索引到你的评论共 10 条，开始分页抓取…",
+        "[2026-10-09 00:00:02] 抓取完成：共 10 条（跳过缺 dyn 字段 0 条）",
+        "[2026-10-09 00:01:00] 已保存 10 条到 my_comments.json",
+    ]
+    (gui_env / "cleaner_log.txt").write_text("\n".join(base), encoding="utf-8")
+    prog = gui.parse_progress()
+    assert prog["fetch"]["done"] is True              # 完成标记
+    assert prog["fetch"]["total"] == 10
+
+    # 新一轮抓取开始 → 完成标记作废
+    lines = base + [
+        "[2026-10-09 00:05:00] AICU 索引到你的评论共 12 条，开始分页抓取…",
+        "[2026-10-09 00:05:02] 第 1 页：5 条，累计 5 条",
+    ]
+    (gui_env / "cleaner_log.txt").write_text("\n".join(lines), encoding="utf-8")
+    prog = gui.parse_progress()
+    assert prog["fetch"]["done"] is False
+    assert prog["fetch"]["total"] == 12
+    assert prog["fetch"]["count"] == 5
+
+
+def test_parse_progress_aborted_fetch_counts_as_done(gui_env):
+    lines = [
+        "[2026-10-09 00:00:00] AICU 索引到你的评论共 10 条，开始分页抓取…",
+        "[2026-10-09 00:00:30] AICU 多轮尝试均失败，提前结束抓取（已抓到的数据不受影响）",
+    ]
+    (gui_env / "cleaner_log.txt").write_text("\n".join(lines), encoding="utf-8")
+    prog = gui.parse_progress()
+    assert prog["fetch"]["done"] is True
+
+
+# ---------- spawn：stderr 并入日志 ----------
+
+def test_spawn_redirects_stderr_to_log(gui_env):
+    cmd = [sys.executable, "-c", "import sys; sys.exit('退出原因标记XYZ')"]
+    proc = gui.spawn(cmd, gui.DEL_PID)
+    proc.wait(timeout=30)
+    log = (gui_env / "cleaner_log.txt").read_text(encoding="utf-8")
+    assert "退出原因标记XYZ" in log
+    assert (gui_env / "gui_delete.pid").read_text(encoding="utf-8").strip() \
+        == str(proc.pid)

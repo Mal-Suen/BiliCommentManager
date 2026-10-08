@@ -19,6 +19,7 @@ build/
 build-venv/
 dist/
 __pycache__/
+.pytest_cache/
 *.exe
 *.exe.old*
 *.zip
