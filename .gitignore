@@ -20,6 +20,7 @@ build-venv/
 dist/
 __pycache__/
 *.exe
+*.exe.old*
 *.zip
 
 # 本地发布包（可由源码重新组装）

@@ -178,6 +178,9 @@ _kernel32.OpenProcess.restype = ctypes.c_void_p
 _kernel32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
 _kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+_kernel32.GetProcessTimes.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_void_p, ctypes.c_void_p,
+                                      ctypes.c_void_p]
 
 
 class _FILETIME(ctypes.Structure):
