@@ -115,13 +115,6 @@ h2{font-size:40px;font-weight:600;line-height:1.1}
   border-radius:8px;padding:12px 14px;font-size:12.5px;color:var(--ink);
   font-family:ui-monospace,Consolas,monospace;overflow-x:auto}
 
-/* 须知 */
-.notes{max-width:720px;margin:0 auto}
-.notes li{font-size:17px;line-height:1.47;color:var(--ink-80);
-  margin-top:18px;list-style:none;padding-left:26px;position:relative}
-.notes li::before{content:"";position:absolute;left:0;top:10px;width:8px;height:8px;
-  border-radius:50%;background:var(--blue)}
-
 /* 下载区 */
 .dl-code{display:inline-block;margin-top:28px;background:rgba(255,255,255,.08);
   border-radius:8px;padding:12px 18px;font-size:13px;color:#e8eaf0;
@@ -151,7 +144,7 @@ footer .sep{color:var(--hairline)}
 <nav class="gnav">
   <a class="brand" href="https://github.com/Mal-Suen/BiliCommentManager">BiliCommentManager</a>
   <div class="links">
-    <a href="#features">功能</a><a href="#deploy">部署</a><a href="#notes">须知</a>
+    <a href="#features">功能</a><a href="#deploy">部署</a>
   </div>
   <a class="cta" href="https://github.com/Mal-Suen/BiliCommentManager/releases/latest">下载</a>
 </nav>
@@ -236,20 +229,6 @@ footer .sep{color:var(--hairline)}
         <code>git clone https://github.com/Mal-Suen/BiliCommentManager.git<br>pip install -r requirements.txt<br>python bili_comment_gui.py</code>
       </div>
     </div>
-  </div>
-</section>
-
-<!-- 须知 -->
-<section class="tile tile-white" id="notes">
-  <div class="wrap">
-    <h2 class="center">诚实声明。</h2>
-    <ul class="notes" style="margin-top:32px">
-      <li>删除不可恢复。删除前，全部评论内容已留档在本地 my_comments.json。</li>
-      <li>评论列表来自第三方索引 AICU，只暴露公开 uid、不带 Cookie；索引有滞后，部分网络环境可能不可达。</li>
-      <li>删除调用 B 站网页端同款接口，属非官方 API 用法；请保持默认低频节奏。</li>
-      <li>未签名 exe 首次运行会有 SmartScreen 蓝色警告，属正常现象（「更多信息 → 仍要运行」）。</li>
-      <li>本工具与哔哩哔哩公司无关，仅供个人管理自己的评论使用。</li>
-    </ul>
   </div>
 </section>
 
