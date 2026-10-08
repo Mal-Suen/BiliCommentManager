@@ -629,7 +629,7 @@ def cmd_delete(args):
                     save_data(uid, comments)
                     log("任务终止：B 站风控拦截（HTTP 412，请求太频繁被暂时拦下）｜"
                         "等几个小时再点一次「开始删除」，会从剩余的继续，已删的不受影响｜"
-                        "技术细节：调大 --delay 放慢速度、确认 cookie.txt 是完整 Cookie（含 buvid3）｜"
+                        "调大 --delay、补全 cookie.txt（含 buvid3）可减少复发｜"
                         "进度已保存")
                     sys.exit(1)
                 if r.status_code != 200:
@@ -658,7 +658,7 @@ def cmd_delete(args):
                 save_data(uid, comments)
                 log(f"任务终止：触发 B 站风控（code={code} {res.get('message')}）｜"
                     "过几个小时再点一次「开始删除」，会从剩余的继续｜"
-                    "技术细节：调大 --delay 放慢速度｜进度已保存")
+                    "调大 --delay 放慢速度可减少复发｜进度已保存")
                 sys.exit(1)
             else:
                 c["error"] = f"code={code} {res.get('message')}"
