@@ -540,8 +540,9 @@ def cmd_delete(args):
                 r = session.post(url, data=form, timeout=20)
                 if r.status_code == 412:
                     save_data(uid, comments)
-                    sys.exit("B 站返回 HTTP 412 风控挑战：请调大 --delay 放慢速度、"
-                             "确认 cookie.txt 是完整 Cookie（含 buvid3），稍后再试；进度已保存")
+                    log("任务终止：B 站返回 HTTP 412 风控挑战——请调大 --delay 放慢速度、"
+                        "确认 cookie.txt 是完整 Cookie（含 buvid3），稍后再试；进度已保存")
+                    sys.exit(1)
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}")
                 res = r.json()
@@ -560,12 +561,14 @@ def cmd_delete(args):
                     f"{type_name(c['type'])} oid={c['oid']}｜{preview(c['message'])}")
             elif code in AUTH_CODES:
                 save_data(uid, comments)
-                sys.exit(f"Cookie/CSRF 失效（code={code} {res.get('message')}），"
-                         "请重新复制 Cookie 后再跑；进度已保存")
+                log(f"任务终止：Cookie/CSRF 失效（code={code} {res.get('message')}）——"
+                    "请重新运行 login 扫码登录后再跑；进度已保存")
+                sys.exit(1)
             elif code in RISK_CODES:
                 save_data(uid, comments)
-                sys.exit(f"触发 B 站风控（code={code} {res.get('message')}）："
-                         "请调大 --delay 放慢速度，过几小时再跑；进度已保存")
+                log(f"任务终止：触发 B 站风控（code={code} {res.get('message')}）——"
+                    "请调大 --delay 放慢速度，过几小时再跑；进度已保存")
+                sys.exit(1)
             else:
                 c["error"] = f"code={code} {res.get('message')}"
                 fail += 1

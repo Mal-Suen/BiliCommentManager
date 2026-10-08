@@ -733,7 +733,7 @@ async function poll(){
     } else {
       if(deleting){
         deleting = false;
-        toast('删除任务已结束');
+        toast('删除任务已结束' + (j.last_line ? '｜' + j.last_line : ''), 6000);
         loadData();
       }
       $('btn-del').disabled = false;
