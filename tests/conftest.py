@@ -22,6 +22,7 @@ def mgr_env(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "SCRIPT_DIR", tmp_path)
     monkeypatch.setattr(mgr, "LOG_FILE", tmp_path / "cleaner_log.txt")
     monkeypatch.setattr(mgr, "DATA_FILE", tmp_path / "my_comments.json")
+    monkeypatch.setattr(mgr, "BACKUP_FILE", tmp_path / "comments_backup.json")
     monkeypatch.setattr(mgr, "COOKIE_FILE", tmp_path / "cookie.txt")
     return tmp_path
 
