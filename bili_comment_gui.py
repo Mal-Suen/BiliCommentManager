@@ -49,6 +49,7 @@ GUI_PID = SCRIPT_DIR / "gui.pid"
 
 TYPE_NAMES = {1: "视频", 11: "带图动态", 12: "专栏", 17: "动态"}
 DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # 源码模式下 worker 与 GUI 用同一个解释器：requests 缺失时界面一切正常，
 # 但「登录/拉取/删除」任务会秒死。启动时探测一次，页面顶部红条警示
@@ -102,10 +103,16 @@ def replace_with_retry(tmp, dst, tries=10):
 
 def save_live(comments, uid):
     with file_lock:
+        complete = None
+        try:
+            complete = json.loads(LIVE.read_text(encoding="utf-8")).get("complete")
+        except Exception:
+            pass
         # tmp 带 pid：防止与 worker 或其他 GUI 进程的写盘共用同一 tmp 互相覆盖
         tmp = LIVE.with_name(f"{LIVE.stem}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(
             {"uid": uid, "fetched_at": datetime.now().isoformat(timespec="seconds"),
+             "complete": bool(complete),
              "comments": {str(k): v for k, v in comments.items()}},
             ensure_ascii=False, indent=1), encoding="utf-8")
         replace_with_retry(tmp, LIVE)
@@ -450,14 +457,14 @@ class Handler(BaseHTTPRequestHandler):
                 pid = delete_proc.pid
             if pid is not None and win_proc_alive(pid, not_before=_pidfile_mtime(DEL_PID)):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                               capture_output=True)
+                               capture_output=True, creationflags=CREATE_NO_WINDOW)
                 stopped.append("删除")
             pid = read_pid(FETCH_PID)
             if fetch_proc is not None and fetch_proc.poll() is None:
                 pid = fetch_proc.pid
             if pid is not None and win_proc_alive(pid, not_before=_pidfile_mtime(FETCH_PID)):
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                               capture_output=True)
+                               capture_output=True, creationflags=CREATE_NO_WINDOW)
                 stopped.append("拉取")
             if stopped:
                 self._json({"ok": True, "stopped": "、".join(stopped)})
@@ -590,7 +597,7 @@ display:flex;gap:10px;align-items:flex-start}
   <div class="chips" id="stats"></div>
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
-    <button id="btn-fetch" title="后台全量重新拉取全部评论，因接口限流较慢（约每 1700 条需 1 小时）">重新拉取</button>
+    <button id="btn-fetch" title="补拉评论：本地清单完整时只增量补新评论（一两分钟）；首次或上次中断则全量拉取（约每 1700 条需 1 小时）">重新拉取</button>
     <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
   </div>
 </header>
@@ -824,12 +831,9 @@ $('btn-fetch').onclick = async ()=>{
   const j = await r.json();
   if(j.ok){
     fetching = true;
-    // 已有清单时按总量估算（每页 5 条、实测约 10 秒/页）；首次拉取无数据则说明基准
-    const eta = DATA.length ? Math.max(1, Math.round(DATA.length / 5 * 10 / 60)) : null;
-    toast('全量拉取已开始：因第三方接口限流，速度较慢'
-      + (eta ? `，按现有 ${DATA.length} 条估算约需 ${eta} 分钟`
-             : '（时长取决于你的评论总量，约每 1700 条需 1 小时）')
-      + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——下次点「重新拉取」会继续补齐，已抓到的不会丢', 8000);
+    toast('拉取已开始：本地清单完整时只增量补新评论（通常一两分钟）；'
+      + '首次拉取或上次中断则全量重拉（约每 1700 条需 1 小时）'
+      + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——已抓到的不会丢', 8000);
   } else {
     toast(j.error||'失败', 6500);
   }
