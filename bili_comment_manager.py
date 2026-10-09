@@ -374,8 +374,8 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0,
         if total is None:
             total = (d.get("cursor") or {}).get("all_count", 0)
             if incremental and known:
-                log(f"AICU 档案共 {total} 条（含已删，索引不反映删除）；"
-                    f"本地已知 {len(known)} 条，只补新评论")
+                log(f"增量拉取：只找新评论（本地已知 {len(known)} 条），"
+                    "翻到已知区域即停")
             else:
                 log(f"AICU 索引到你的评论共 {total} 条，开始分页抓取…")
         replies = d.get("replies") or []
