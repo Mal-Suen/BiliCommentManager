@@ -355,10 +355,10 @@ def aicu_get(params, max_tries=3):
 
 
 def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0,
-                       old=None, incremental=True):
+                       old=None, incremental=True, known=None):
     # AICU 走系统 curl（见 aicu_get 注释），不携带任何 Cookie，只暴露公开 uid
     old = old or {}
-    known = set(old)
+    known = set(old) if known is None else known
     comments = {}
     page, total, skipped = 1, None, 0
     consecutive_known = 0
@@ -374,8 +374,7 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0,
         if total is None:
             total = (d.get("cursor") or {}).get("all_count", 0)
             if incremental and known:
-                log(f"增量拉取：只找新评论（本地已知 {len(known)} 条），"
-                    "翻到已知区域即停")
+                log("增量拉取：只找新评论，翻到已知区域即停")
             else:
                 log(f"AICU 索引到你的评论共 {total} 条，开始分页抓取…")
         replies = d.get("replies") or []
@@ -632,14 +631,15 @@ def cmd_fetch(args):
     log(f"登录校验通过：{uname}（uid={uid}）")
     old, _ = load_data()
     backup = load_backup()
-    incremental = bool(old) and not getattr(args, "full", False) and data_complete()
+    known = set(backup) | set(old)  # 已知＝实时＋全量档案（清除过的也算已知）
+    incremental = bool(known) and not getattr(args, "full", False) and data_complete()
     if incremental:
-        log(f"本地清单完整（{len(old)} 条），增量拉取：只补新评论")
+        log("本地清单完整，增量拉取：只补新评论")
     fresh, completed = fetch_all_comments(
         uid, ps=args.ps,
         page_delay=parse_pair(args.page_delay, (3.0, 6.0)),
         max_pages=args.max_pages,
-        old=old, incremental=incremental,
+        old=old, incremental=incremental, known=known,
     )
     live, new_entries, archived, purged = reconcile_fetch(old, backup, fresh)
     save_data(uid, live, complete=completed)
@@ -875,6 +875,17 @@ def cmd_delete(args):
                     time.sleep(random.uniform(dmin, dmax))
         else:
             log(f"核验完成：本轮 {len(round_deleted)} 条删除全部生效")
+    # ---------- 清除：已删条目移出实时数据（归档进全量快照） ----------
+    purged_all = {rpid: c for rpid, c in comments.items() if c.get("deleted")}
+    if purged_all:
+        backup = load_backup()
+        to_archive = {rpid: c for rpid, c in purged_all.items()
+                      if rpid not in backup}
+        comments = {rpid: c for rpid, c in comments.items()
+                    if not c.get("deleted")}
+        append_backup(uid, to_archive)
+        log(f"已清除 {len(purged_all)} 条已删评论"
+            "（实时数据只留现存；历史在全量快照可回看）")
     save_data(uid, comments)
     log(f"本轮结束：成功删除 {ok} 条，失败 {fail} 条；"
         f"核验确认 {verified} 条，未生效重删成功 {retry_ok} 条、仍失败 {retry_fail} 条"

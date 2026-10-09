@@ -344,6 +344,27 @@ def test_fetch_incremental_stops_at_known_pages(mgr_env, monkeypatch):
     assert 11 in fresh and 12 in fresh
 
 
+def test_fetch_incremental_with_backup_known(mgr_env, monkeypatch):
+    """已知集合可来自全量档案：实时数据为空也能增量停止（不退化为全量）。"""
+    seq = [
+        _page([1, 2, 3, 4, 5], total=5),
+        _page([1, 2, 3, 4, 5]),
+        _page([], is_end=True),
+    ]
+    state = {"i": 0}
+
+    def fake_aicu(params, max_tries=3):
+        d = seq[state["i"]]
+        state["i"] += 1
+        return d
+
+    monkeypatch.setattr(mgr, "aicu_get", fake_aicu)
+    fresh, completed = mgr.fetch_all_comments(
+        "u1", page_delay=(0, 0), old={}, incremental=True, known={1, 2, 3, 4, 5})
+    assert completed is True
+    assert state["i"] == 2                    # 第 2 页全已知即停，第 3 页没请求
+
+
 def test_fetch_full_mode_pages_everything(mgr_env, monkeypatch):
     """全量模式翻完所有页，不提前停。"""
     old = {i: make_comment(i) for i in range(1, 6)}
