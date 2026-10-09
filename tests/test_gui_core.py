@@ -144,6 +144,27 @@ def test_parse_progress_delete_and_fetch(gui_env):
     assert prog["last_line"].endswith("内容")
 
 
+def test_parse_progress_ignores_stale_task_lines(gui_env):
+    """旧任务的日志行不污染当前进度：登录校验行重置全部进度状态。"""
+    lines = [
+        "[2026-10-09 00:00:00] 登录校验通过：旧任务（uid=1）",
+        "[2026-10-09 00:00:01] AICU 索引到你的评论共 1722 条，开始分页抓取…",
+        "[2026-10-09 00:00:02] 第 100 页：5 条，累计 500 条",
+        "[2026-10-09 00:00:03] 抓取完成：共 500 条",
+        "[2026-10-09 00:00:04] [7/50] 已删除 rpid=1 视频 oid=1｜内容",
+        "[2026-10-09 00:00:05] 登录校验通过：新任务（uid=1）",
+        "[2026-10-09 00:00:06] 增量拉取：只找新评论，翻到已知区域即停",
+        "[2026-10-09 00:00:07] 第 1 页：5 条，累计 5 条",
+    ]
+    (gui_env / "cleaner_log.txt").write_text("\n".join(lines), encoding="utf-8")
+    prog = gui.parse_progress()
+    f = prog["fetch"]
+    assert f["total"] is None           # 旧全量的 1722 不再当进度分母
+    assert f["page"] == 1 and f["count"] == 5
+    assert f["done"] is False           # 旧的完成标记也被重置
+    assert prog["delete"]["i"] is None  # 旧删除进度不残留
+
+
 def test_parse_progress_fetch_done_and_reset(gui_env):
     base = [
         "[2026-10-09 00:00:00] AICU 索引到你的评论共 10 条，开始分页抓取…",

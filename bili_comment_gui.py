@@ -255,6 +255,11 @@ def parse_progress():
     import re
     for line in tail_log():
         last_line = line if line else last_line
+        if "登录校验通过" in line:
+            # 每个任务以登录校验开头：重置进度状态，
+            # 旧任务的日志行（如历史全量拉取的总数）不再污染当前进度
+            d_i, d_n, d_done = None, None, None
+            f_page, f_count, f_total, f_done = None, None, None, False
         m = re.search(r"\[(\d+)/(\d+)\] 已删除", line)
         if m:
             d_i, d_n = int(m.group(1)), int(m.group(2))
