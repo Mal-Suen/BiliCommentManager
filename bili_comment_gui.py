@@ -103,13 +103,26 @@ def replace_with_retry(tmp, dst, tries=10):
 
 def save_live(comments, uid):
     with file_lock:
+        complete = None
+        try:
+            complete = json.loads(LIVE.read_text(encoding="utf-8")).get("complete")
+        except Exception:
+            pass
         # tmp 带 pid：防止与 worker 或其他 GUI 进程的写盘共用同一 tmp 互相覆盖
         tmp = LIVE.with_name(f"{LIVE.stem}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(
             {"uid": uid, "fetched_at": datetime.now().isoformat(timespec="seconds"),
+             "complete": bool(complete),
              "comments": {str(k): v for k, v in comments.items()}},
             ensure_ascii=False, indent=1), encoding="utf-8")
         replace_with_retry(tmp, LIVE)
+
+
+def live_complete():
+    try:
+        return bool(json.loads(LIVE.read_text(encoding="utf-8")).get("complete"))
+    except Exception:
+        return False
 
 
 def make_snapshot():
@@ -146,24 +159,9 @@ def make_snapshot():
 
 
 def build_view():
+    # 实时数据只留现存评论（拉取时清除已删条目）；全量历史看 comments_backup.json
     live = load_json(LIVE)
-    backup = load_json(BACKUP) if BACKUP.exists() else None
-    if backup is None:
-        items = [dict(c) for c in (live or {}).values()]
-    else:
-        items, seen = [], set()
-        for rpid, c in backup.items():
-            lc = (live or {}).get(rpid)
-            m = dict(c)
-            if lc is not None:
-                m["keep"] = lc.get("keep", False)
-                m["deleted"] = lc.get("deleted", False)
-                m["error"] = lc.get("error")
-            items.append(m)
-            seen.add(rpid)
-        for rpid, lc in (live or {}).items():  # 快照之后新抓到的
-            if rpid not in seen:
-                items.append(dict(lc))
+    items = [dict(c) for c in (live or {}).values()]
     items.sort(key=lambda c: c.get("time", 0))
     return items, live
 
@@ -478,7 +476,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             args = TASK_PREFIX + ["fetch"]
             fetch_proc = spawn(args, FETCH_PID)
-            self._json({"ok": True, "pid": fetch_proc.pid})
+            self._json({"ok": True, "pid": fetch_proc.pid,
+                        "incremental": LIVE.exists() and live_complete()})
 
         elif self.path == "/api/login":
             if task_alive(login_proc, LOGIN_PID):
@@ -591,7 +590,7 @@ display:flex;gap:10px;align-items:flex-start}
   <div class="chips" id="stats"></div>
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
-    <button id="btn-fetch" title="重新拉取：从 AICU 索引拉全量，新评论自动并入全量快照；已删评论保持已删（AICU 索引不反映删除，删除以 B 站确认为准）">重新拉取</button>
+    <button id="btn-fetch" title="重新拉取：本地清单完整时增量补新评论（几分钟）；首次或上次中断则全量拉档案。已删条目会从实时数据清除（历史在全量快照可回看）">重新拉取</button>
     <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
   </div>
 </header>
@@ -825,9 +824,11 @@ $('btn-fetch').onclick = async ()=>{
   const j = await r.json();
   if(j.ok){
     fetching = true;
-    toast('拉取已开始：从 AICU 索引拉全量评论（约每 1700 条需 1 小时）——'
-      + '新评论自动并入全量快照；已删评论保持已删（AICU 索引不反映删除）'
-      + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——已抓到的不会丢', 8000);
+    const msg = (j.incremental
+      ? '拉取已开始：本地清单完整，增量补新评论（通常几分钟）——已删条目同时从实时数据清除'
+      : '拉取已开始：全量拉取 AICU 档案（约每 1700 条需 1 小时）——完成后实时数据只留现存评论，已删条目清除（历史在全量快照）')
+      + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——已抓到的不会丢';
+    toast(msg, 8000);
   } else {
     toast(j.error||'失败', 6500);
   }

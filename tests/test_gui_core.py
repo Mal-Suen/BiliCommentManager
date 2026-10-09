@@ -105,9 +105,10 @@ def test_make_snapshot_missing_live(gui_env):
     assert ok is False and "不存在" in err
 
 
-# ---------- build_view：实时状态覆盖快照 ----------
+# ---------- build_view：实时视图只含实时数据 ----------
 
-def test_build_view_overlays_live_status(gui_env):
+def test_build_view_returns_live_only(gui_env):
+    """实时视图只含实时数据条目（已删条目拉取时清除；全量历史看快照视图）。"""
     backup = {"comments": {"1": make_comment(1, deleted=False),
                            "2": make_comment(2, deleted=False)}}
     (gui_env / "comments_backup.json").write_text(json.dumps(backup), encoding="utf-8")
@@ -117,9 +118,9 @@ def test_build_view_overlays_live_status(gui_env):
 
     items, live_out = gui.build_view()
     by_rpid = {c["rpid"]: c for c in items}
-    assert by_rpid[1]["deleted"] is True       # 实时状态覆盖
-    assert by_rpid[2]["deleted"] is False      # live 缺失（AICU 滞后）保持快照值
-    assert 3 in by_rpid                        # 快照后新抓到的并入
+    assert set(by_rpid) == {1, 3}              # 快照独有的条目 2 不进实时视图
+    assert by_rpid[1]["deleted"] is True       # 实时标记原样
+    assert by_rpid[3]["deleted"] is False
     assert live_out is not None
 
 

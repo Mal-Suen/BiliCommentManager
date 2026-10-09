@@ -240,27 +240,51 @@ def test_merge_comments_preserves_local_state(mgr_env):
     assert merged[4]["deleted"] is False      # 新评论默认待删
 
 
-def test_reconcile_keeps_deleted_when_index_returns(mgr_env):
-    """AICU 索引不反映删除：仍返回的已删评论保持已删，不复活、不打标签。"""
+def test_reconcile_purges_deleted_and_skips_echoes(mgr_env):
+    """重新拉取时清除：已删条目移出实时（归档），AICU 回声跳过，新评论进实时＋全量。"""
     old = {1: make_comment(1, deleted=True), 2: make_comment(2, deleted=True),
            3: make_comment(3), 4: make_comment(4, keep=True)}
     backup = {i: make_comment(i) for i in range(1, 5)}
-    fresh = {1: make_comment(1), 3: make_comment(3), 4: make_comment(4)}
-    merged, new_entries = mgr.reconcile_fetch(old, backup, fresh)
-    assert merged[1]["deleted"] is True       # 索引仍返回：保持已删
-    assert merged[2]["deleted"] is True       # 未被返回：保持已删
-    assert not merged[1].get("redelete")
-    assert merged[4]["keep"] is True
-    assert not new_entries                    # 三条都在全量里
+    fresh = {1: make_comment(1), 3: make_comment(3),
+             4: make_comment(4), 5: make_comment(5)}
+    live, new_entries, archived, purged = mgr.reconcile_fetch(old, backup, fresh)
+    assert 1 not in live and 2 not in live     # 已删条目被清除出实时
+    assert purged == 2
+    assert not archived                        # 两条都已在全量档案里
+    assert live[3]["deleted"] is False         # 待删保留
+    assert live[4]["keep"] is True             # 保留标记跟随
+    assert set(new_entries) == {5}             # 新评论进实时＋全量
+
+
+def test_reconcile_archives_purged_not_in_backup(mgr_env):
+    """不在全量档案里的已删条目：清除前先归档，AICU 回声也不算新评论。"""
+    old = {1: make_comment(1, deleted=True)}
+    backup = {}
+    fresh = {1: make_comment(1)}
+    live, new_entries, archived, purged = mgr.reconcile_fetch(old, backup, fresh)
+    assert live == {} and purged == 1
+    assert set(archived) == {1}                 # 清除前先归档
+    assert not new_entries                     # 回声不算新评论
 
 
 def test_reconcile_new_comments_to_backup(mgr_env):
     old = {1: make_comment(1)}
     backup = {1: make_comment(1)}
     fresh = {1: make_comment(1), 5: make_comment(5)}
-    merged, new_entries = mgr.reconcile_fetch(old, backup, fresh)
-    assert set(new_entries) == {5}            # 不在全量里 → 新评论
-    assert merged[5]["deleted"] is False
+    live, new_entries, archived, purged = mgr.reconcile_fetch(old, backup, fresh)
+    assert set(new_entries) == {5}             # 不在全量里 → 新评论
+    assert live[5]["deleted"] is False
+    assert purged == 0 and not archived
+
+
+def test_save_data_complete_flag_roundtrip(mgr_env):
+    comments = {1: make_comment(1)}
+    mgr.save_data("u1", comments, complete=True)
+    assert mgr.data_complete() is True
+    mgr.save_data("u1", comments)              # 默认沿用现有标记
+    assert mgr.data_complete() is True
+    mgr.save_data("u1", comments, complete=False)
+    assert mgr.data_complete() is False
 
 
 def test_append_backup_appends_only_missing(mgr_env):
@@ -287,14 +311,41 @@ def test_fetch_midway_save_keeps_deleted_marks(mgr_env, monkeypatch):
         return d
 
     monkeypatch.setattr(mgr, "aicu_get", fake_aicu)
-    fresh = mgr.fetch_all_comments("u1", page_delay=(0, 0), old=old)
+    fresh, completed = mgr.fetch_all_comments(
+        "u1", page_delay=(0, 0), old=old, incremental=False)
+    assert completed is True
     loaded, uid = mgr.load_data()
     assert uid == "u1" and set(loaded) == {1, 2, 3, 4, 5}
     assert all(c["deleted"] for c in loaded.values())   # 第 10 页落盘后标记仍在
 
 
-def test_fetch_pages_everything(mgr_env, monkeypatch):
-    """拉取不受本地数据约束：翻完 AICU 全部页。"""
+def test_fetch_incremental_stops_at_known_pages(mgr_env, monkeypatch):
+    """增量模式：AICU 按时间倒序、新评论在前，连续整页已知即提前停。"""
+    old = {i: make_comment(i) for i in range(1, 11)}
+    mgr.save_data("u1", old, complete=True)
+    seq = [
+        _page([11, 12, 1, 2, 3], total=12),   # 2 新 + 3 已知
+        _page([4, 5, 6, 7, 8]),               # 全已知 → 连续第 1 页
+        _page([6, 7, 8, 9, 10]),              # 全已知 → 连续第 2 页，停止
+        _page([9, 10]),                       # 不应被请求
+    ]
+    state = {"i": 0}
+
+    def fake_aicu(params, max_tries=3):
+        d = seq[state["i"]]
+        state["i"] += 1
+        return d
+
+    monkeypatch.setattr(mgr, "aicu_get", fake_aicu)
+    fresh, completed = mgr.fetch_all_comments(
+        "u1", page_delay=(0, 0), old=old, incremental=True)
+    assert completed is True
+    assert state["i"] == 3                    # 第 4 页没有请求
+    assert 11 in fresh and 12 in fresh
+
+
+def test_fetch_full_mode_pages_everything(mgr_env, monkeypatch):
+    """全量模式翻完所有页，不提前停。"""
     old = {i: make_comment(i) for i in range(1, 6)}
     seq = [
         _page([1, 2, 3, 4, 5], total=5),
@@ -309,5 +360,6 @@ def test_fetch_pages_everything(mgr_env, monkeypatch):
         return d
 
     monkeypatch.setattr(mgr, "aicu_get", fake_aicu)
-    fresh = mgr.fetch_all_comments("u1", page_delay=(0, 0), old=old)
-    assert state["i"] == 3 and set(fresh) == {1, 2, 3, 4, 5}
+    fresh, completed = mgr.fetch_all_comments(
+        "u1", page_delay=(0, 0), old=old, incremental=False)
+    assert completed is True and state["i"] == 3

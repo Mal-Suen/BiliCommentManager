@@ -354,11 +354,15 @@ def aicu_get(params, max_tries=3):
     return None
 
 
-def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0, old=None):
+def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0,
+                       old=None, incremental=True):
     # AICU 走系统 curl（见 aicu_get 注释），不携带任何 Cookie，只暴露公开 uid
     old = old or {}
+    known = set(old)
     comments = {}
     page, total, skipped = 1, None, 0
+    consecutive_known = 0
+    completed = False
     while True:
         params = {"uid": uid, "pn": page, "ps": ps, "mode": 0, "keyword": ""}
         data = aicu_get(params)
@@ -369,10 +373,16 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0, old=None):
         d = data.get("data") or {}
         if total is None:
             total = (d.get("cursor") or {}).get("all_count", 0)
-            log(f"AICU 索引到你的评论共 {total} 条，开始分页抓取…")
+            if incremental and known:
+                log(f"AICU 档案共 {total} 条（含已删，索引不反映删除）；"
+                    f"本地已知 {len(known)} 条，只补新评论")
+            else:
+                log(f"AICU 索引到你的评论共 {total} 条，开始分页抓取…")
         replies = d.get("replies") or []
         if not replies:
+            completed = True
             break
+        new_in_page = 0
         for item in replies:
             try:
                 rpid = int(item["rpid"])
@@ -391,14 +401,27 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0, old=None):
                     "deleted": False,
                     "error": None,
                 }
+                if rpid not in known:
+                    new_in_page += 1
             except (KeyError, ValueError, TypeError):
                 skipped += 1
-        log(f"第 {page} 页：{len(replies)} 条，累计 {len(comments)} 条")
+        log(f"第 {page} 页：{len(replies)} 条，累计 {len(comments)} 条"
+            + (f"，新 {new_in_page} 条" if known else ""))
         heal_pid_file("fetch")  # pid 被覆盖后自愈，GUI 进度显示不中断
+        if incremental and known and new_in_page == 0:
+            consecutive_known += 1
+            if consecutive_known >= 2:
+                log(f"连续 {consecutive_known} 页均为已知评论，提前结束抓取"
+                    "（新评论已找齐；完整重拉可用 fetch --full）")
+                completed = True
+                break
+        else:
+            consecutive_known = 0
         if page % 10 == 0:
             # 中途落盘必须并入本地状态：只写 fresh 会把已删/保留标记整个清掉
-            save_data(uid, merge_comments(old, comments))
+            save_data(uid, merge_comments(old, comments), complete=False)
         if (d.get("cursor") or {}).get("is_end"):
+            completed = True
             break
         if max_pages and page >= max_pages:
             log(f"已达 --max-pages {max_pages} 上限，停止抓取")
@@ -406,7 +429,15 @@ def fetch_all_comments(uid, ps=5, page_delay=(3.0, 6.0), max_pages=0, old=None):
         page += 1
         time.sleep(random.uniform(*page_delay))
     log(f"抓取完成：共 {len(comments)} 条（跳过缺 dyn 字段 {skipped} 条）")
-    return comments
+    return comments, completed
+
+
+def data_complete():
+    """上次 fetch 是否完整跑完——决定本次能否增量拉取（中断过则全量补齐）。"""
+    try:
+        return bool(json.loads(DATA_FILE.read_text(encoding="utf-8")).get("complete"))
+    except Exception:
+        return False
 
 
 def load_backup():
@@ -467,10 +498,13 @@ def load_data():
     return {}, None
 
 
-def save_data(uid, comments):
+def save_data(uid, comments, complete=None):
+    if complete is None:
+        complete = data_complete()  # 删除/保留等操作不改变清单完整性，沿用现有标记
     payload = {
         "uid": uid,
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "complete": bool(complete),
         "comments": {str(k): v for k, v in comments.items()},
     }
     # tmp 带 pid：防止并发任务（CLI+GUI、fetch+delete）共用同一 tmp 互相覆盖
@@ -566,13 +600,28 @@ def apply_filters(comments, args):
 
 
 def reconcile_fetch(old, backup, fresh):
-    """拉取结果并入本地状态；全量快照里没有的 → 新评论，待并入全量。
-
-    已删评论保持已删：AICU 是第三方爬虫档案，不反映 B 站的删除（索引只增
-    不减），删除是否生效以删除时 B 站接口返回 code=0 的确认为准。"""
-    merged = merge_comments(old, fresh)
-    new_entries = {rpid: c for rpid, c in merged.items() if rpid not in backup}
-    return merged, new_entries
+    """拉取对账＋清除（实时数据只留现存评论）：
+    - 已删条目移出实时数据——不在全量档案的先归档，档案可回看；
+    - AICU 返回、在全量档案或本次清除清单里的 → 已删条目的索引回声，跳过
+      （AICU 索引不反映删除）；
+    - 全量档案里没有的 → 新评论，进实时＋全量。
+    返回 (新的实时数据, 新评论, 待归档的已删条目, 清除条数)。"""
+    purged = {rpid: c for rpid, c in old.items() if c.get("deleted")}
+    live = {rpid: dict(c) for rpid, c in old.items() if not c.get("deleted")}
+    new_entries = {}
+    for rpid, c in fresh.items():
+        oc = live.get(rpid)
+        if oc is not None:
+            if oc.get("keep"):
+                c["keep"] = True
+            live[rpid] = c
+        elif rpid in backup or rpid in purged:
+            pass  # 已删条目的 AICU 回声：索引不反映删除，跳过
+        else:
+            live[rpid] = c
+            new_entries[rpid] = c
+    archived = {rpid: c for rpid, c in purged.items() if rpid not in backup}
+    return live, new_entries, archived, len(purged)
 
 
 def cmd_fetch(args):
@@ -583,19 +632,24 @@ def cmd_fetch(args):
     log(f"登录校验通过：{uname}（uid={uid}）")
     old, _ = load_data()
     backup = load_backup()
-    fresh = fetch_all_comments(
+    incremental = bool(old) and not getattr(args, "full", False) and data_complete()
+    if incremental:
+        log(f"本地清单完整（{len(old)} 条），增量拉取：只补新评论")
+    fresh, completed = fetch_all_comments(
         uid, ps=args.ps,
         page_delay=parse_pair(args.page_delay, (3.0, 6.0)),
         max_pages=args.max_pages,
-        old=old,
+        old=old, incremental=incremental,
     )
-    merged, new_entries = reconcile_fetch(old, backup, fresh)
-    save_data(uid, merged)
-    append_backup(uid, new_entries)
-    by_type = Counter(c["type"] for c in merged.values())
+    live, new_entries, archived, purged = reconcile_fetch(old, backup, fresh)
+    save_data(uid, live, complete=completed)
+    append_backup(uid, {**archived, **new_entries})
+    by_type = Counter(c["type"] for c in live.values())
     stat = "，".join(f"{type_name(t)} {n} 条" for t, n in sorted(by_type.items()))
-    pending = sum(1 for c in merged.values() if not c.get("deleted"))
-    log(f"已保存 {len(merged)} 条到 {DATA_FILE}（{stat}）")
+    pending = sum(1 for c in live.values() if not c.get("deleted"))
+    if purged:
+        log(f"已清除 {purged} 条已删评论（实时数据只留现存；历史在全量快照可回看）")
+    log(f"已保存 {len(live)} 条到 {DATA_FILE}（{stat}）")
     log(f"本次新发现 {len(new_entries)} 条（已并入全量快照），待处理 {pending} 条；"
         "用 list 查看，keep 标记保留，delete 删除")
 
@@ -765,6 +819,8 @@ def main():
                    help="每页条数（默认 5；实测更大易触发 Cloudflare 挑战）")
     p.add_argument("--page-delay", default="3,6", help="翻页随机间隔秒（默认 3,6）")
     p.add_argument("--max-pages", type=int, default=0, help="最多抓取页数（0=不限）")
+    p.add_argument("--full", action="store_true",
+                   help="完整重拉全部档案页（默认：本地清单完整时增量补新，几分钟即完）")
     p.set_defaults(func=cmd_fetch)
 
     p = sub.add_parser("list", parents=[common], help="查看评论清单")
