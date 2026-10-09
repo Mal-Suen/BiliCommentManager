@@ -642,7 +642,9 @@ def cmd_fetch(args):
         old=old, incremental=incremental, known=known,
     )
     live, new_entries, archived, purged = reconcile_fetch(old, backup, fresh)
-    save_data(uid, live, complete=completed)
+    # 一条都没抓到的失败（网络抖动）不降级完整标记：本地覆盖没变，
+    # 降级会让下次拉取误回退全量模式（用户会再看到档案总数）
+    save_data(uid, live, complete=completed if fresh else None)
     append_backup(uid, {**archived, **new_entries})
     by_type = Counter(c["type"] for c in live.values())
     stat = "，".join(f"{type_name(t)} {n} 条" for t, n in sorted(by_type.items()))
