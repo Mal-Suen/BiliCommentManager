@@ -240,18 +240,17 @@ def test_merge_comments_preserves_local_state(mgr_env):
     assert merged[4]["deleted"] is False      # 新评论默认待删
 
 
-def test_reconcile_flags_redelete_for_returned_deleted(mgr_env):
-    """已删评论仍被 AICU 返回 → 判删除未生效，打重删标记重新入列。"""
+def test_reconcile_keeps_deleted_when_index_returns(mgr_env):
+    """AICU 索引不反映删除：仍返回的已删评论保持已删，不复活、不打标签。"""
     old = {1: make_comment(1, deleted=True), 2: make_comment(2, deleted=True),
            3: make_comment(3), 4: make_comment(4, keep=True)}
     backup = {i: make_comment(i) for i in range(1, 5)}
     fresh = {1: make_comment(1), 3: make_comment(3), 4: make_comment(4)}
-    merged, new_entries, redelete = mgr.reconcile_fetch(old, backup, fresh)
-    assert merged[1]["redelete"] is True and merged[1]["deleted"] is False
-    assert merged[2]["deleted"] is True       # 未被返回的保持已删
-    assert not merged[3].get("redelete")      # 待删不受影响
-    assert merged[4]["keep"] is True and not merged[4].get("redelete")
-    assert redelete == 1
+    merged, new_entries = mgr.reconcile_fetch(old, backup, fresh)
+    assert merged[1]["deleted"] is True       # 索引仍返回：保持已删
+    assert merged[2]["deleted"] is True       # 未被返回：保持已删
+    assert not merged[1].get("redelete")
+    assert merged[4]["keep"] is True
     assert not new_entries                    # 三条都在全量里
 
 
@@ -259,9 +258,8 @@ def test_reconcile_new_comments_to_backup(mgr_env):
     old = {1: make_comment(1)}
     backup = {1: make_comment(1)}
     fresh = {1: make_comment(1), 5: make_comment(5)}
-    merged, new_entries, redelete = mgr.reconcile_fetch(old, backup, fresh)
+    merged, new_entries = mgr.reconcile_fetch(old, backup, fresh)
     assert set(new_entries) == {5}            # 不在全量里 → 新评论
-    assert redelete == 0
     assert merged[5]["deleted"] is False
 
 

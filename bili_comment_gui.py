@@ -158,7 +158,6 @@ def build_view():
             if lc is not None:
                 m["keep"] = lc.get("keep", False)
                 m["deleted"] = lc.get("deleted", False)
-                m["redelete"] = lc.get("redelete", False)
                 m["error"] = lc.get("error")
             items.append(m)
             seen.add(rpid)
@@ -346,13 +345,10 @@ class Handler(BaseHTTPRequestHandler):
             deleted = sum(1 for c in items if c.get("deleted"))
             kept = sum(1 for c in items if c.get("keep") and not c.get("deleted"))
             failed = sum(1 for c in items if c.get("error") and not c.get("deleted"))
-            redelete = sum(1 for c in items
-                           if c.get("redelete") and not c.get("deleted"))
             stats = {
                 "total": len(items),
                 "deleted": deleted,
                 "kept": kept,
-                "redelete": redelete,
                 "failed": failed,
                 "pending": len(items) - deleted - kept,
                 "oldest": datetime.fromtimestamp(items[0]["time"]).strftime("%Y-%m-%d") if items and items[0].get("time") else None,
@@ -551,7 +547,6 @@ td .del{color:var(--muted);text-decoration:line-through}
 .b-kept{background:rgba(224,185,62,.15);color:var(--yellow)}
 .b-deleted{background:rgba(63,185,111,.15);color:var(--green)}
 .b-failed{background:rgba(229,72,77,.15);color:var(--red)}
-.b-redelete{background:rgba(229,132,12,.15);color:#c2570a}
 .rowact{white-space:nowrap;display:flex;gap:8px;align-items:center}
 .rowact a{color:var(--accent);text-decoration:none;font-size:12.5px}
 .kbtn{padding:2px 10px;font-size:12px}
@@ -596,7 +591,7 @@ display:flex;gap:10px;align-items:flex-start}
   <div class="chips" id="stats"></div>
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
-    <button id="btn-fetch" title="重新拉取并核对：已删评论若仍被 AICU 索引返回会标「重删」重新入列；新评论自动并入全量（约每 1700 条需 1 小时）">重新拉取</button>
+    <button id="btn-fetch" title="重新拉取：从 AICU 索引拉全量，新评论自动并入全量快照；已删评论保持已删（AICU 索引不反映删除，删除以 B 站确认为准）">重新拉取</button>
     <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
   </div>
 </header>
@@ -617,7 +612,6 @@ display:flex;gap:10px;align-items:flex-start}
   <label>状态
     <select id="f-status">
       <option value="all">全部</option><option value="pending">待删</option>
-      <option value="redelete">重删</option>
       <option value="kept">保留</option><option value="deleted">已删</option>
       <option value="failed">失败</option>
     </select></label>
@@ -659,7 +653,6 @@ function linkOf(c){
 function statusOf(c){
   if(c.deleted) return 'deleted';
   if(c.keep) return 'kept';
-  if(c.redelete) return 'redelete';
   return c.error ? 'failed' : 'pending';
 }
 
@@ -712,7 +705,6 @@ function renderStats(s){
     `<span class="chip">待删<b>${s.pending}</b></span>`+
     `<span class="chip">已删<b class"">${s.deleted}</b></span>`+
     `<span class="chip">保留<b>${s.kept}</b></span>`+
-    (s.redelete?`<span class="chip">重删<b>${s.redelete}</b></span>`:'')+
     (s.failed?`<span class="chip">失败<b>${s.failed}</b></span>`:'')+
     (s.oldest?`<span class="chip">${s.oldest} ~ ${s.newest}</span>`:'')+
     (s.backup_at?`<span class="chip">快照 ${s.backup_at}</span>`:'');
@@ -738,8 +730,7 @@ function renderTable(){
       const badge = {pending:'<span class="badge b-pending">待删</span>',
         kept:'<span class="badge b-kept">保留</span>',
         deleted:'<span class="badge b-deleted">已删</span>',
-        failed:'<span class="badge b-failed">失败</span>',
-        redelete:'<span class="badge b-redelete" title="删除未生效，重新入列待删">重删</span>'}[st];
+        failed:'<span class="badge b-failed">失败</span>'}[st];
       const reply = c.is_reply ? '（回复）' : '';
       const cls = st==='deleted' ? 'del' : '';
       const kbtn = c.keep
@@ -760,7 +751,7 @@ function renderTable(){
       `<span>第 ${page} / ${pages} 页（${list.length} 条）</span>`+
       `<button onclick="goPage(${page+1})" ${page>=pages?'disabled':''}>下一页</button>`;
   }
-  const pend = list.filter(c=>statusOf(c)==='pending'||statusOf(c)==='redelete').length;
+  const pend = list.filter(c=>statusOf(c)==='pending').length;
   const fr = $('f-from').value, to = $('f-to').value;
   const range = (fr||to) ? `（${fr||'最早'} ~ ${to||'最新'}）` : '';
   $('bar-info').innerHTML = `当前筛选待删 <b>${pend}</b> 条${range}`;
@@ -834,8 +825,8 @@ $('btn-fetch').onclick = async ()=>{
   const j = await r.json();
   if(j.ok){
     fetching = true;
-    toast('拉取已开始：完整核对 AICU 索引（约每 1700 条需 1 小时）——'
-      + '已删评论若仍被索引返回，会标「重删」重新入列；新评论自动并入全量'
+    toast('拉取已开始：从 AICU 索引拉全量评论（约每 1700 条需 1 小时）——'
+      + '新评论自动并入全量快照；已删评论保持已删（AICU 索引不反映删除）'
       + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——已抓到的不会丢', 8000);
   } else {
     toast(j.error||'失败', 6500);
@@ -844,7 +835,7 @@ $('btn-fetch').onclick = async ()=>{
 
 $('btn-del').onclick = ()=>{
   if(fullView){ toast('全量视图为只读快照，请先点「返回实时视图」再删除'); return; }
-  const list = filtered().filter(c=>statusOf(c)==='pending'||statusOf(c)==='redelete');
+  const list = filtered().filter(c=>statusOf(c)==='pending');
   if(!list.length){ toast('当前筛选没有待删评论'); return; }
   if(deleting){ toast('已有删除任务在运行'); return; }
   const fr = $('f-from').value, to = $('f-to').value;
@@ -928,7 +919,7 @@ async function poll(){
       fetching = false;
       if(f.done){
         fetch('/api/snapshot', {method:'POST'});  // 拉取完成，新评论并入全量快照
-        toast('拉取完成：新评论已并入全量；删除未生效的已标「重删」待重新删除');
+        toast('拉取完成：新评论已并入全量快照');
         showFail(null);
       } else {
         toast('拉取已停止或未启动成功' + (j.last_line ? '｜' + j.last_line : ''), 6000);

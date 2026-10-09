@@ -447,7 +447,7 @@ def merge_comments(old, fresh):
         oc = old.get(rpid)
         if oc:
             if oc.get("deleted"):
-                c["deleted"] = True  # AICU 索引有滞后，保留已删状态避免重复请求
+                c["deleted"] = True  # AICU 索引不反映删除，已删状态以本地为准
             if oc.get("keep"):
                 c["keep"] = True
         merged[rpid] = c
@@ -566,28 +566,13 @@ def apply_filters(comments, args):
 
 
 def reconcile_fetch(old, backup, fresh):
-    """拉取结果与本地状态对账：
-    - 已删（或待重删）评论仍被 AICU 返回 → 判定删除未生效，打 redelete 标记重新入列；
-    - 全量快照里没有的 → 新评论，待并入全量。
-    返回 (合并后的实时数据, 待并入全量的新条目, 重删条数)。"""
-    merged = {}
-    redelete = 0
-    new_entries = {}
-    for rpid, c in fresh.items():
-        oc = old.get(rpid)
-        if oc:
-            if oc.get("keep"):
-                c["keep"] = True
-            if oc.get("deleted") or oc.get("redelete"):
-                c["redelete"] = True  # 索引仍返回：上次删除未生效，重新入列
-                redelete += 1
-        if rpid not in backup:
-            new_entries[rpid] = c
-        merged[rpid] = c
-    for rpid, c in old.items():
-        if rpid not in merged:
-            merged[rpid] = c
-    return merged, new_entries, redelete
+    """拉取结果并入本地状态；全量快照里没有的 → 新评论，待并入全量。
+
+    已删评论保持已删：AICU 是第三方爬虫档案，不反映 B 站的删除（索引只增
+    不减），删除是否生效以删除时 B 站接口返回 code=0 的确认为准。"""
+    merged = merge_comments(old, fresh)
+    new_entries = {rpid: c for rpid, c in merged.items() if rpid not in backup}
+    return merged, new_entries
 
 
 def cmd_fetch(args):
@@ -604,16 +589,15 @@ def cmd_fetch(args):
         max_pages=args.max_pages,
         old=old,
     )
-    merged, new_entries, redelete = reconcile_fetch(old, backup, fresh)
+    merged, new_entries = reconcile_fetch(old, backup, fresh)
     save_data(uid, merged)
     append_backup(uid, new_entries)
     by_type = Counter(c["type"] for c in merged.values())
     stat = "，".join(f"{type_name(t)} {n} 条" for t, n in sorted(by_type.items()))
     pending = sum(1 for c in merged.values() if not c.get("deleted"))
     log(f"已保存 {len(merged)} 条到 {DATA_FILE}（{stat}）")
-    log(f"本次新发现 {len(new_entries)} 条（已并入全量快照），"
-        f"删除未生效待重删 {redelete} 条，待处理 {pending} 条；"
-        "用 list 查看，keep 标记保留，delete 删除（重删条目一并处理）")
+    log(f"本次新发现 {len(new_entries)} 条（已并入全量快照），待处理 {pending} 条；"
+        "用 list 查看，keep 标记保留，delete 删除")
 
 
 def cmd_list(args):
@@ -628,17 +612,13 @@ def cmd_list(args):
         span = f"{fmt_time(items[0]['time'])} ~ {fmt_time(items[-1]['time'])}"
     else:
         span = "无时间信息"
-    redelete = sum(1 for c in items if c.get("redelete") and not c.get("deleted"))
-    print(f"共 {len(items)} 条（已删 {deleted}，保留 {kept}，"
-          f"待删 {len(items) - deleted - kept}，其中重删 {redelete}）"
+    print(f"共 {len(items)} 条（已删 {deleted}，保留 {kept}，待删 {len(items) - deleted - kept}）"
           f"｜{'，'.join(f'{type_name(t)} {n}' for t, n in sorted(by_type.items()))}｜{span}")
     print("视频评论可用 https://www.bilibili.com/video/av{oid} 打开核对；"
           "keep 命令按 rpid 标记保留")
     show = items if args.all else items[:args.head]
     for c in show:
-        mark = ("已删" if c.get("deleted") else
-                ("保留" if c.get("keep") else
-                 ("重删" if c.get("redelete") else "待删")))
+        mark = "已删" if c.get("deleted") else ("保留" if c.get("keep") else "待删")
         reply = "（回复）" if c.get("is_reply") else ""
         print(f"[{fmt_time(c['time'])}] {type_name(c['type'])} rpid={c['rpid']} "
               f"oid={c['oid']} {reply}{mark}｜{preview(c['message'])}")
