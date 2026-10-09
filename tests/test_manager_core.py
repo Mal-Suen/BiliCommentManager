@@ -363,3 +363,44 @@ def test_fetch_full_mode_pages_everything(mgr_env, monkeypatch):
     fresh, completed = mgr.fetch_all_comments(
         "u1", page_delay=(0, 0), old=old, incremental=False)
     assert completed is True and state["i"] == 3
+
+
+# ---------- 删除核验 ----------
+
+class _FakeReply:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    def __init__(self, status=200, payload=None, exc=None):
+        self.status, self.payload, self.exc = status, payload, exc
+
+    def get(self, url, timeout=20):
+        if self.exc:
+            raise self.exc
+        return _FakeReply(self.status, self.payload)
+
+
+def test_comment_exists_by_12006(mgr_env):
+    gone = _FakeSession(payload={"code": 12006, "message": "没有该评论"})
+    present = _FakeSession(payload={"code": 0, "data": {"root": {}}})
+    broken = _FakeSession(exc=RuntimeError("net"))
+    c = make_comment(1)
+    assert mgr.comment_exists(gone, c) is False      # 12006 → 已删
+    assert mgr.comment_exists(present, c) is True    # code=0 → 仍存在
+    assert mgr.comment_exists(broken, c) is True     # 网络异常保守当作存在
+
+
+def test_verify_targets_selection(mgr_env):
+    live = {1: make_comment(1, deleted=True), 2: make_comment(2),
+            3: make_comment(3, keep=True)}
+    backup = {1: make_comment(1), 2: make_comment(2), 3: make_comment(3),
+              4: make_comment(4)}                     # 4 已清除出实时
+    targets = mgr.verify_targets(live, backup)
+    assert set(targets) == {1, 4}                    # 已删的＋仅档案里的
+    assert 2 not in targets and 3 not in targets     # 现存的不核验

@@ -700,6 +700,39 @@ def cmd_keep(args):
     log(f"已{action} {hit} 条" + (f"，未找到 {miss} 条" if miss else ""))
 
 
+def comment_exists(session, c):
+    """只读核验：B 站 reply/reply 接口查评论是否仍存在。
+
+    已删返回 code=12006「没有该评论」，现存返回 code=0（根评论与楼中楼、
+    视频/动态/专栏全类型实测一致）；网络异常时保守当作仍存在，交给重删兜底。"""
+    url = (f"https://api.bilibili.com/x/v2/reply/reply"
+           f"?type={c['type']}&oid={c['oid']}&root={c['rpid']}&pn=1&ps=1")
+    try:
+        r = session.get(url, timeout=20)
+        return r.status_code == 200 and r.json().get("code") == 0
+    except Exception:
+        return True
+
+
+def _terminate(uid, comments, kind, detail):
+    """删除/重删遇到登录失效或风控：存盘、落终止消息、退出。"""
+    save_data(uid, comments)
+    if kind == "auth":
+        log(f"任务终止：登录已失效（{detail}）｜"
+            "点界面右上角「扫码登录」重新扫码，再点「开始删除」会接着删｜"
+            "命令行用户：重新运行 login｜进度已保存")
+    elif kind == "risk_http":
+        log("任务终止：B 站风控拦截（HTTP 412，请求太频繁被暂时拦下）｜"
+            "等几个小时再点一次「开始删除」，会从剩余的继续，已删的不受影响｜"
+            "调大 --delay、补全 cookie.txt（含 buvid3）可减少复发｜"
+            "进度已保存")
+    else:
+        log(f"任务终止：触发 B 站风控（{detail}）｜"
+            "过几个小时再点一次「开始删除」，会从剩余的继续｜"
+            "调大 --delay 放慢速度可减少复发｜进度已保存")
+    sys.exit(1)
+
+
 def cmd_delete(args):
     refuse_if_task_running("delete", "删除")
     comments, _ = load_data()
@@ -740,12 +773,7 @@ def cmd_delete(args):
             try:
                 r = session.post(url, data=form, timeout=20)
                 if r.status_code == 412:
-                    save_data(uid, comments)
-                    log("任务终止：B 站风控拦截（HTTP 412，请求太频繁被暂时拦下）｜"
-                        "等几个小时再点一次「开始删除」，会从剩余的继续，已删的不受影响｜"
-                        "调大 --delay、补全 cookie.txt（含 buvid3）可减少复发｜"
-                        "进度已保存")
-                    sys.exit(1)
+                    _terminate(uid, comments, "risk_http", "HTTP 412")
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}")
                 res = r.json()
@@ -763,17 +791,9 @@ def cmd_delete(args):
                 log(f"[{i}/{len(pending)}] 已删除 rpid={c['rpid']} "
                     f"{type_name(c['type'])} oid={c['oid']}｜{preview(c['message'])}")
             elif code in AUTH_CODES:
-                save_data(uid, comments)
-                log(f"任务终止：登录已失效（code={code} {res.get('message')}）｜"
-                    "点界面右上角「扫码登录」重新扫码，再点「开始删除」会接着删｜"
-                    "命令行用户：重新运行 login｜进度已保存")
-                sys.exit(1)
+                _terminate(uid, comments, "auth", f"code={code} {res.get('message')}")
             elif code in RISK_CODES:
-                save_data(uid, comments)
-                log(f"任务终止：触发 B 站风控（code={code} {res.get('message')}）｜"
-                    "过几个小时再点一次「开始删除」，会从剩余的继续｜"
-                    "调大 --delay 放慢速度可减少复发｜进度已保存")
-                sys.exit(1)
+                _terminate(uid, comments, "risk", f"code={code} {res.get('message')}")
             else:
                 c["error"] = f"code={code} {res.get('message')}"
                 fail += 1
@@ -790,9 +810,167 @@ def cmd_delete(args):
         save_data(uid, comments)
         log(f"收到中断，进度已保存（成功 {ok}，失败 {fail}）；重跑 delete 会继续")
         return
+    # ---------- 核验：逐条向 B 站确认删除生效，未生效的自动重删 ----------
+    round_deleted = [c for c in pending if c.get("deleted")]
+    verified = retry_ok = retry_fail = 0
+    failed_verify = []
+    if round_deleted:
+        log(f"开始核验：向 B 站逐条确认本轮删除的 {len(round_deleted)} 条已生效"
+            "（只读查询，约每条 1 秒）")
+        for i, c in enumerate(round_deleted, 1):
+            heal_pid_file("delete")
+            if comment_exists(session, c):
+                failed_verify.append(c)
+                log(f"[核验 {i}/{len(round_deleted)}] 未生效 rpid={c['rpid']}"
+                    f"｜{preview(c['message'])}")
+            else:
+                verified += 1
+            if i % 50 == 0:
+                log(f"核验进度 {i}/{len(round_deleted)}")
+            time.sleep(random.uniform(0.8, 1.5))
+        if failed_verify:
+            log(f"核验完成：{verified} 条确认删除，{len(failed_verify)} 条未生效，"
+                "开始重新删除（低频节奏同删除）")
+            for i, c in enumerate(failed_verify, 1):
+                heal_pid_file("delete")
+                form = {"oid": c["oid"], "type": c["type"],
+                        "rpid": c["rpid"], "csrf": csrf}
+                url = DEL_API
+                if c["type"] == 11:
+                    url = f"{DEL_API}?csrf={csrf}"
+                try:
+                    r = session.post(url, data=form, timeout=20)
+                    if r.status_code == 412:
+                        _terminate(uid, comments, "risk_http", "HTTP 412")
+                    if r.status_code != 200:
+                        raise RuntimeError(f"HTTP {r.status_code}")
+                    res = r.json()
+                except Exception as e:
+                    c["deleted"] = False
+                    c["error"] = f"重删网络异常: {e}"
+                    retry_fail += 1
+                    log(f"[重删 {i}/{len(failed_verify)}] 异常 rpid={c['rpid']} {e}")
+                    save_data(uid, comments)
+                    continue
+                code = res.get("code")
+                if code == 0:
+                    c["deleted"] = True
+                    c["error"] = None
+                    retry_ok += 1
+                    log(f"[重删 {i}/{len(failed_verify)}] 已删除 rpid={c['rpid']}")
+                elif code in AUTH_CODES:
+                    _terminate(uid, comments, "auth",
+                               f"code={code} {res.get('message')}")
+                elif code in RISK_CODES:
+                    _terminate(uid, comments, "risk",
+                               f"code={code} {res.get('message')}")
+                else:
+                    c["deleted"] = False
+                    c["error"] = f"重删失败 code={code} {res.get('message')}"
+                    retry_fail += 1
+                    log(f"[重删 {i}/{len(failed_verify)}] 失败 rpid={c['rpid']} "
+                        f"code={code} {res.get('message')}")
+                save_data(uid, comments)
+                if i < len(failed_verify):
+                    time.sleep(random.uniform(dmin, dmax))
+        else:
+            log(f"核验完成：本轮 {len(round_deleted)} 条删除全部生效")
     save_data(uid, comments)
-    log(f"本轮结束：成功删除 {ok} 条，失败 {fail} 条"
-        + (f"；失败明细见 {DATA_FILE} 中 error 字段" if fail else ""))
+    log(f"本轮结束：成功删除 {ok} 条，失败 {fail} 条；"
+        f"核验确认 {verified} 条，未生效重删成功 {retry_ok} 条、仍失败 {retry_fail} 条"
+        + (f"；失败明细见 {DATA_FILE} 中 error 字段" if fail or retry_fail else ""))
+
+
+def verify_targets(live, backup):
+    """核验对象：实时数据里标记已删的＋已清除出实时（仅存全量档案）的。"""
+    universe = dict(backup)
+    universe.update(live)
+    targets = {}
+    for rpid, c in universe.items():
+        lc = live.get(rpid)
+        if lc is not None and not lc.get("deleted"):
+            continue  # 现存评论（待删/保留/失败）不核验
+        targets[rpid] = lc if lc is not None else c
+    return targets
+
+
+def cmd_verify(args):
+    """核验历史删除：逐条向 B 站确认已删评论真实生效；--fix 重删仍存在的。"""
+    refuse_if_task_running("delete", "核验")
+    cookie, csrf = load_cookie()
+    session = make_bili_session(cookie)
+    uid, uname = get_self(session)
+    log(f"登录校验通过：{uname}（uid={uid}）")
+    live, _ = load_data()
+    backup = load_backup()
+    targets = verify_targets(live, backup)
+    if not targets:
+        log("没有可核验的已删评论（实时数据无已删条目、全量档案无清除记录）")
+        return
+    log(f"开始核验 {len(targets)} 条已删评论（只读查询，约每条 1 秒）…")
+    survivors = []
+    confirmed = 0
+    for i, (rpid, c) in enumerate(
+            sorted(targets.items(), key=lambda kv: kv[1].get("time", 0)), 1):
+        heal_pid_file("delete")
+        if comment_exists(session, c):
+            survivors.append(c)
+            log(f"[核验 {i}/{len(targets)}] 仍存在 rpid={rpid}"
+                f"｜{preview(c['message'])}")
+        else:
+            confirmed += 1
+        if i % 50 == 0:
+            log(f"核验进度 {i}/{len(targets)}")
+        time.sleep(random.uniform(0.8, 1.5))
+    log(f"核验完成：{confirmed} 条确认已删，{len(survivors)} 条仍存在")
+    if not survivors:
+        return
+    if not args.fix:
+        log("仍存在的评论：加 --fix 直接重新删除，或先 fetch 拉取后用界面删除")
+        return
+    log(f"开始重新删除 {len(survivors)} 条（低频节奏同删除）…")
+    dmin, dmax = parse_pair(args.delay, (5.0, 12.0))
+    fixed = still = 0
+    for i, c in enumerate(survivors, 1):
+        heal_pid_file("delete")
+        form = {"oid": c["oid"], "type": c["type"], "rpid": c["rpid"], "csrf": csrf}
+        url = DEL_API
+        if c["type"] == 11:
+            url = f"{DEL_API}?csrf={csrf}"
+        try:
+            r = session.post(url, data=form, timeout=20)
+            if r.status_code == 412:
+                _terminate(uid, live, "risk_http", "HTTP 412")
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            res = r.json()
+        except Exception as e:
+            c["deleted"] = False
+            c["error"] = f"重删网络异常: {e}"
+            still += 1
+            live[c["rpid"]] = c  # 放回实时数据，界面可见可重试
+            log(f"[重删 {i}/{len(survivors)}] 异常 rpid={c['rpid']} {e}")
+            save_data(uid, live)
+            continue
+        code = res.get("code")
+        if code == 0:
+            fixed += 1
+            log(f"[重删 {i}/{len(survivors)}] 已删除 rpid={c['rpid']}")
+        elif code in AUTH_CODES:
+            _terminate(uid, live, "auth", f"code={code} {res.get('message')}")
+        elif code in RISK_CODES:
+            _terminate(uid, live, "risk", f"code={code} {res.get('message')}")
+        else:
+            c["deleted"] = False
+            c["error"] = f"重删失败 code={code} {res.get('message')}"
+            still += 1
+            live[c["rpid"]] = c
+            log(f"[重删 {i}/{len(survivors)}] 失败 rpid={c['rpid']} "
+                f"code={code} {res.get('message')}")
+        save_data(uid, live)
+        if i < len(survivors):
+            time.sleep(random.uniform(dmin, dmax))
+    log(f"重删结束：成功 {fixed} 条，仍失败 {still} 条（已放回实时数据，界面可见）")
 
 
 def add_filter_args(p):
@@ -844,6 +1022,13 @@ def main():
     p.add_argument("--exclude-oid", default="", help="跳过的 oid 列表，逗号分隔")
     p.add_argument("--yes", action="store_true", help="跳过确认")
     p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("verify", parents=[common],
+                       help="核验历史删除：逐条向 B 站确认已删评论真实生效")
+    p.add_argument("--fix", action="store_true",
+                   help="仍存在的评论直接重新删除（默认只报告）")
+    p.add_argument("--delay", default="5,12", help="重删随机间隔秒（默认 5,12）")
+    p.set_defaults(func=cmd_verify)
 
     args = parser.parse_args()
     if args.proxy:
