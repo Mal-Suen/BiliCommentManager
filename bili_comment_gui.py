@@ -166,6 +166,36 @@ def build_view():
     return items, live
 
 
+def build_full_view(live, backup):
+    """全量视图：档案＋实时叠加；不在实时的档案条目＝已删。
+
+    依据清除语义：条目只以「已删」身份离开实时数据（核验通过后清除），
+    所以「档案里有、实时里没有」就是已删的证明，无需存标记。"""
+    items, seen = [], set()
+    for rpid, c in (backup or {}).items():
+        lc = (live or {}).get(rpid)
+        m = dict(c)
+        if lc is not None:
+            m["keep"] = lc.get("keep", False)
+            m["deleted"] = lc.get("deleted", False)
+            m["error"] = lc.get("error")
+        else:
+            m["deleted"] = True
+        items.append(m)
+        seen.add(rpid)
+    for rpid, lc in (live or {}).items():  # 实时有而档案没有的
+        if rpid not in seen:
+            items.append(dict(lc))
+    items.sort(key=lambda c: c.get("time", 0))
+    return items
+
+
+def archived_deleted_count(live, backup):
+    """台账已删数：档案中不在实时数据里的条目数（清除只发生在核验通过后）。"""
+    live_ids = set(live or {})
+    return sum(1 for rpid in (backup or {}) if rpid not in live_ids)
+
+
 # ---------- 进程管理 ----------
 
 # 进程存活探测的两个坑：
@@ -326,9 +356,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, HTML_PAGE, "text/html; charset=utf-8")
         elif self.path.startswith("/api/data"):
             if "view=full" in self.path:
+                live = load_json(LIVE)
                 backup = load_json(BACKUP) if BACKUP.exists() else None
-                items = [dict(c) for c in (backup or {}).values()]
-                items.sort(key=lambda c: c.get("time", 0))
+                items = build_full_view(live, backup)
                 deleted = sum(1 for c in items if c.get("deleted"))
                 kept = sum(1 for c in items if c.get("keep") and not c.get("deleted"))
                 self._json({
@@ -345,12 +375,15 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
             items, live = build_view()
+            backup = load_json(BACKUP) if BACKUP.exists() else {}
+            # 台账：已清除出实时的档案条目＝已删，统计条计入总数与已删
+            archived_deleted = archived_deleted_count(live, backup)
             deleted = sum(1 for c in items if c.get("deleted"))
             kept = sum(1 for c in items if c.get("keep") and not c.get("deleted"))
             failed = sum(1 for c in items if c.get("error") and not c.get("deleted"))
             stats = {
-                "total": len(items),
-                "deleted": deleted,
+                "total": len(items) + archived_deleted,
+                "deleted": deleted + archived_deleted,
                 "kept": kept,
                 "failed": failed,
                 "pending": len(items) - deleted - kept,
@@ -596,7 +629,7 @@ display:flex;gap:10px;align-items:flex-start}
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
     <button id="btn-fetch" title="重新拉取：本地清单完整时增量补新评论（几分钟）；首次或上次中断则全量拉档案。已删条目会从实时数据清除（历史在全量快照可回看）">重新拉取</button>
-    <button id="btn-full" title="查看全量评论快照：完整清单，不随删除进度变化——删除后仍可回看全部历史评论">查看全量评论</button>
+    <button id="btn-full" title="查看全量历史：含已删评论（状态为当前已知），删除后仍可回看">查看全量评论</button>
   </div>
 </header>
 
@@ -639,7 +672,7 @@ display:flex;gap:10px;align-items:flex-start}
 
 <script>
 const PER = 100;
-let DATA = [], page = 1, lastSig = '', deleting = false, fetching = false, fullView = false;
+let DATA = [], STATS = {}, page = 1, lastSig = '', deleting = false, fetching = false, fullView = false;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -720,9 +753,11 @@ function renderTable(){
   if(page>pages) page = pages;
   const slice = list.slice((page-1)*PER, page*PER);
   if(!DATA.length){
-    $('table-wrap').innerHTML =
-      '<div class="empty">暂无数据：点右上角「扫码登录」（手机确认后 Cookie 自动写入），' +
-      '再点「重新拉取」即可开始</div>';
+    $('table-wrap').innerHTML = STATS.deleted
+      ? '<div class="empty">当前没有待处理评论；已删 ' + STATS.deleted +
+        ' 条可在「查看全量评论」回看</div>'
+      : '<div class="empty">暂无数据：点右上角「扫码登录」（手机确认后 Cookie 自动写入），' +
+        '再点「重新拉取」即可开始</div>';
     $('pager').innerHTML = '';
   } else if(!list.length){
     $('table-wrap').innerHTML = '<div class="empty">当前筛选没有匹配的评论</div>';
@@ -768,14 +803,15 @@ async function loadData(){
   const j = await r.json();
   showEnv(j.worker_warning);
   DATA = j.comments;
+  STATS = j.stats;
   renderStats(j.stats);
   renderTable();
   const banner = $('view-banner');
   if(fullView){
     banner.style.display = '';
-    banner.textContent = '全量快照视图：完整评论清单，不随删除进度变化'
-      + (j.stats.backup_at ? `（快照时间 ${j.stats.backup_at}）` : '')
-      + '——点右上角「返回实时视图」查看删除进度';
+    banner.textContent = '全量历史：含已删评论，状态为当前已知'
+      + (j.stats.backup_at ? `（档案更新 ${j.stats.backup_at}）` : '')
+      + '——点右上角「返回实时视图」处理现存评论';
   } else {
     banner.style.display = 'none';
   }
@@ -815,7 +851,7 @@ $('btn-full').onclick = async ()=>{
   fullView = !fullView;
   if(fullView){
     $('btn-full').textContent = '返回实时视图';
-    toast('全量快照视图：完整评论清单，不随删除进度变化，删除后仍可回看全部历史', 4500);
+    toast('全量历史：含已删评论（状态为当前已知），删除后仍可回看', 4500);
   } else {
     $('btn-full').textContent = '查看全量评论';
     toast('已返回实时视图');

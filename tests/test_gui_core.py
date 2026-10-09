@@ -124,6 +124,26 @@ def test_build_view_returns_live_only(gui_env):
     assert live_out is not None
 
 
+def test_build_full_view_derives_status(gui_env):
+    """全量视图派生：档案条目不在实时→已删；在实时→实时状态。"""
+    live = {2: make_comment(2), 3: make_comment(3, keep=True)}
+    backup = {1: make_comment(1), 2: make_comment(2), 3: make_comment(3)}
+    items = gui.build_full_view(live, backup)
+    by = {c["rpid"]: c for c in items}
+    assert by[1]["deleted"] is True            # 不在实时 → 已删（清除语义）
+    assert by[2]["deleted"] is False           # 在实时 → 实时状态
+    assert by[3]["keep"] is True
+    assert len(items) == 3
+
+
+def test_archived_deleted_count(gui_env):
+    """台账已删数＝档案中不在实时里的条目数。"""
+    live = {2: make_comment(2)}
+    backup = {1: make_comment(1), 2: make_comment(2), 4: make_comment(4)}
+    assert gui.archived_deleted_count(live, backup) == 2    # 1 和 4
+    assert gui.archived_deleted_count(None, None) == 0
+
+
 # ---------- parse_progress ----------
 
 def test_parse_progress_delete_and_fetch(gui_env):
