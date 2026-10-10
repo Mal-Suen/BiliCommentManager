@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BiliCommentManager — B 站评论管理器（黑历史管理器）</title>
-<meta name="description" content="扫码登录，拉取你在 B 站发表过的每一条评论，按时间段筛选，低频批量删除。">
+<meta name="description" content="扫码登录，拉取你在 B 站发表过的每一条评论，低频批量删除，删完逐条向 B 站核验。">
 <style>
 :root{
   --blue:#0066cc;--blue-focus:#0071e3;--blue-on-dark:#2997ff;
@@ -155,9 +155,9 @@ footer .sep{color:var(--hairline)}
     <h1>B 站评论管理器</h1>
     <p class="lead" style="color:var(--ink-80);font-size:24px;font-weight:300">黑历史管理器</p>
     <p class="sub">扫码登录，拉取你在 B 站发表过的每一条评论。<br>
-      时间段筛选，标记保留，低频批量删除。</p>
+      低频删除，删完逐条向 B 站核验——没删掉的自动重删。</p>
     <div class="cta-row">
-      <a class="btn-primary" href="https://github.com/Mal-Suen/BiliCommentManager/releases/download/v1.1/BiliCommentManager.exe">下载 exe</a>
+      <a class="btn-primary" href="https://github.com/Mal-Suen/BiliCommentManager/releases/latest/download/BiliCommentManager.exe">下载 exe</a>
       <a class="btn-secondary" href="https://github.com/Mal-Suen/BiliCommentManager">查看源码</a>
     </div>
     <div class="mock" aria-hidden="true">
@@ -173,7 +173,7 @@ footer .sep{color:var(--hairline)}
         <div class="mock-row"><span class="t">2025-09-02</span><span class="c">三年后再来看，依然经典</span><span class="s">待删</span></div>
         <div class="mock-prog">
           <div class="track"><div class="fill"></div></div>
-          <p>删除中 806/1280（63%）｜每条 5-12 秒低频节奏</p>
+          <p>删除中 806/1280（63%）｜每条 5-12 秒 · 删完逐条核验</p>
         </div>
       </div>
     </div>
@@ -186,17 +186,19 @@ footer .sep{color:var(--hairline)}
     <h2>全部评论，一屏尽览。</h2>
     <p class="sub">从最早的一条到上周的最新一条，全部拉取、时间正序、随时回看。</p>
     <div class="stats-row">
-      <div class="stat"><b>100%</b><span>评论全量拉取</span></div>
+      <div class="stat"><b>100%</b><span>删除逐条核验</span></div>
       <div class="stat"><b>5-12s</b><span>每条随机删除间隔</span></div>
       <div class="stat"><b>0</b><span>Cookie 出本机次数</span></div>
     </div>
     <div class="feature-grid" style="text-align:left">
       <div class="card"><h3>扫码登录</h3><p>B 站官方二维码接口。Cookie 写入本地文件，只发送给 api.bilibili.com，永不出你的电脑。</p></div>
+      <div class="card"><h3>删除核验</h3><p>每条删除后向 B 站只读查询确认生效，未生效的自动重删——B 站亲口确认，才算删完。</p></div>
+      <div class="card"><h3>增量拉取</h3><p>日常拉取只补新评论，几分钟完成；「完整重拉」翻全档案，捞出晚收录的旧评论。</p></div>
       <div class="card"><h3>时间段筛选</h3><p>日期范围、类型、关键词、状态四维筛选。每条评论可一键跳回原视频核对。</p></div>
       <div class="card"><h3>低频删除</h3><p>每条随机 5-12 秒、每 20 条休息 30-60 秒，风控信号自动中止。可随时停止、重开续跑。</p></div>
       <div class="card"><h3>实时进度</h3><p>每删一条即回写本地数据文件，进度条反映真实状态。关闭窗口，后台任务照常运行。</p></div>
       <div class="card"><h3>保留名单</h3><p>批量删除前，把想留的评论标记为保留——比如某条有纪念意义的评论。</p></div>
-      <div class="card"><h3>全量快照</h3><p>只读快照视图，不随删除变化。删完之后，仍可回看完整的历史清单。</p></div>
+      <div class="card"><h3>全量历史</h3><p>只读历史视图，含已删评论、状态为当前已知。删完之后，仍可回看完整清单。</p></div>
     </div>
   </div>
 </section>
@@ -206,7 +208,7 @@ footer .sep{color:var(--hairline)}
   <div class="wrap">
     <h2>慢，是刻意的。</h2>
     <p class="lead">低频删除，稳字当头。</p>
-    <p class="sub">B 站接口对高频操作有限流与风控。BiliCommentManager 用随机间隔与周期休息把节奏压到人肉手删的速度——每删一条实时落盘，触发风控自动中止并保存进度，绝不硬闯。</p>
+    <p class="sub">B 站接口对高频操作有限流与风控。BiliCommentManager 用随机间隔与周期休息把节奏压到人肉手删的速度——每删一条实时落盘，触发风控自动中止并保存进度，绝不硬闯。删完之后逐条向 B 站核验，没删掉的自动重删。</p>
   </div>
 </section>
 
@@ -225,7 +227,7 @@ footer .sep{color:var(--hairline)}
       <div class="deploy">
         <div class="tag">可审查</div>
         <h3>源码部署</h3>
-        <p>两个 Python 文件、约 2200 行，全部可读可审。装好依赖即可运行，命令行与图形界面双模式。</p>
+        <p>核心两个 Python 文件约 2000 行＋50 个测试用例，全部可读可审。装好依赖即可运行，命令行与图形界面双模式。</p>
         <code>git clone https://github.com/Mal-Suen/BiliCommentManager.git<br>pip install -r requirements.txt<br>python bili_comment_gui.py</code>
       </div>
     </div>
@@ -237,7 +239,7 @@ footer .sep{color:var(--hairline)}
   <div class="wrap">
     <h2>现在就清理你的黑历史。</h2>
     <div class="cta-row">
-      <a class="btn-primary" href="https://github.com/Mal-Suen/BiliCommentManager/releases/download/v1.1/BiliCommentManager.exe">下载 exe</a>
+      <a class="btn-primary" href="https://github.com/Mal-Suen/BiliCommentManager/releases/latest/download/BiliCommentManager.exe">下载 exe</a>
       <a class="btn-secondary" href="https://github.com/Mal-Suen/BiliCommentManager">GitHub 仓库</a>
     </div>
     <span class="dl-code">Windows 10/11 · 约 22MB · GPL-3.0 开源</span>
