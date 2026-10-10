@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BiliCommentManager — B 站评论管理器（黑历史管理器）</title>
-<meta name="description" content="扫码登录，拉取你在 B 站发表过的每一条评论，低频批量删除，删完逐条向 B 站核验。">
+<title>BiliCommentManager — B站评论管理器（黑历史管理器）</title>
+<meta name="description" content="B站评论，一键拉取。黑历史，一键清除。">
 <style>
 :root{
   --blue:#0066cc;--blue-focus:#0071e3;--blue-on-dark:#2997ff;
@@ -152,10 +152,9 @@ footer .sep{color:var(--hairline)}
 <!-- 首屏 -->
 <section class="tile tile-parchment center">
   <div class="wrap">
-    <h1>B 站评论管理器</h1>
+    <h1>B站评论管理器</h1>
     <p class="lead" style="color:var(--ink-80);font-size:24px;font-weight:300">黑历史管理器</p>
-    <p class="sub">扫码登录，拉取你在 B 站发表过的每一条评论。<br>
-      低频删除，删完逐条向 B 站核验——没删掉的自动重删。</p>
+    <p class="sub">B站评论，一键拉取。黑历史，一键清除。</p>
     <div class="cta-row">
       <a class="btn-primary" href="https://github.com/Mal-Suen/BiliCommentManager/releases/latest/download/BiliCommentManager.exe">下载 exe</a>
       <a class="btn-secondary" href="https://github.com/Mal-Suen/BiliCommentManager">查看源码</a>
@@ -167,8 +166,8 @@ footer .sep{color:var(--hairline)}
           <b>总数 <em>1280</em></b><b>已删 <em>806</em></b><b>待删 <em>474</em></b>
           <b>保留 <em>12</em></b><b>2021-03 ~ 2026-09</b>
         </div>
-        <div class="mock-row"><span class="t">2021-03-14</span><span class="c">前排围观，这个视频太真实了</span><span class="s g">已删</span></div>
-        <div class="mock-row"><span class="t">2022-06-08</span><span class="c">从首页推荐刷过来的，评论区比视频还精彩</span><span class="s">待删</span></div>
+        <div class="mock-row"><span class="t">2021-03-14</span><span class="c">这种视频也有人看？浪费时间</span><span class="s g">已删</span></div>
+        <div class="mock-row"><span class="t">2022-06-08</span><span class="c">就这水平也敢发视频？建议转行</span><span class="s">待删</span></div>
         <div class="mock-row"><span class="t">2023-11-20</span><span class="c">这个梗我居然看懂了，暴露年龄了</span><span class="s">保留</span></div>
         <div class="mock-row"><span class="t">2025-09-02</span><span class="c">三年后再来看，依然经典</span><span class="s">待删</span></div>
         <div class="mock-prog">
@@ -184,20 +183,20 @@ footer .sep{color:var(--hairline)}
 <section class="tile tile-white center" id="features">
   <div class="wrap">
     <h2>全部评论，一屏尽览。</h2>
-    <p class="sub">从最早的一条到上周的最新一条，全部拉取、时间正序、随时回看。</p>
+    <p class="sub">从最早的一条，到上周的最新一条。全部在这里，随时回看。</p>
     <div class="stats-row">
       <div class="stat"><b>100%</b><span>删除逐条核验</span></div>
-      <div class="stat"><b>5-12s</b><span>每条随机删除间隔</span></div>
-      <div class="stat"><b>0</b><span>Cookie 出本机次数</span></div>
+      <div class="stat"><b>几分钟</b><span>增量拉取</span></div>
+      <div class="stat"><b>0</b><span>隐私外泄</span></div>
     </div>
     <div class="feature-grid" style="text-align:left">
-      <div class="card"><h3>扫码登录</h3><p>B 站官方二维码接口。Cookie 写入本地文件，只发送给 api.bilibili.com，永不出你的电脑。</p></div>
-      <div class="card"><h3>删除核验</h3><p>每条删除后向 B 站只读查询确认生效，未生效的自动重删——B 站亲口确认，才算删完。</p></div>
-      <div class="card"><h3>增量拉取</h3><p>日常拉取只补新评论，几分钟完成；「完整重拉」翻全档案，捞出晚收录的旧评论。</p></div>
+      <div class="card"><h3>扫码登录</h3><p>官方扫码登录。登录信息保存在你的电脑，只发送给 B站，不经过任何第三方。</p></div>
+      <div class="card"><h3>删除核验</h3><p>每条删除后向 B站只读查询确认生效，未生效的自动重删。删除结果，以 B站确认为准。</p></div>
+      <div class="card"><h3>增量拉取</h3><p>日常拉取只补新评论，几分钟完成。「完整重拉」核对全档案，发现晚收录的旧评论。</p></div>
       <div class="card"><h3>时间段筛选</h3><p>日期范围、类型、关键词、状态四维筛选。每条评论可一键跳回原视频核对。</p></div>
-      <div class="card"><h3>低频删除</h3><p>每条随机 5-12 秒、每 20 条休息 30-60 秒，风控信号自动中止。可随时停止、重开续跑。</p></div>
+      <div class="card"><h3>安全删除</h3><p>每条随机 5-12 秒、每 20 条休息 30-60 秒，风控信号自动中止并保存进度。随时停止，重开续跑。</p></div>
       <div class="card"><h3>实时进度</h3><p>每删一条即回写本地数据文件，进度条反映真实状态。关闭窗口，后台任务照常运行。</p></div>
-      <div class="card"><h3>保留名单</h3><p>批量删除前，把想留的评论标记为保留——比如某条有纪念意义的评论。</p></div>
+      <div class="card"><h3>保留名单</h3><p>批量删除前，可标记需要保留的评论，例如纪念性内容。</p></div>
       <div class="card"><h3>全量历史</h3><p>只读历史视图，含已删评论、状态为当前已知。删完之后，仍可回看完整清单。</p></div>
     </div>
   </div>
@@ -206,9 +205,9 @@ footer .sep{color:var(--hairline)}
 <!-- 删除节奏 -->
 <section class="tile tile-dark center">
   <div class="wrap">
-    <h2>慢，是刻意的。</h2>
-    <p class="lead">低频删除，稳字当头。</p>
-    <p class="sub">B 站接口对高频操作有限流与风控。BiliCommentManager 用随机间隔与周期休息把节奏压到人肉手删的速度——每删一条实时落盘，触发风控自动中止并保存进度，绝不硬闯。删完之后逐条向 B 站核验，没删掉的自动重删。</p>
+    <h2>删除，稳字当头。</h2>
+    <p class="lead">进度不丢，删完核验。</p>
+    <p class="sub">B站接口对高频操作有限流与风控。BiliCommentManager 用随机间隔与周期休息控制节奏，每删一条实时落盘，触发风控自动中止并保存进度。删完之后逐条向 B站核验，没删掉的自动重删。</p>
   </div>
 </section>
 
@@ -248,7 +247,7 @@ footer .sep{color:var(--hairline)}
 
 <footer>
   <div class="wrap">
-    <span>BiliCommentManager · B 站评论管理器（黑历史管理器）</span>
+    <span>BiliCommentManager · B站评论管理器（黑历史管理器）</span>
     <span class="sep">|</span>
     <a href="https://github.com/Mal-Suen/BiliCommentManager">GitHub</a>
     <a href="https://github.com/Mal-Suen/BiliCommentManager/releases">Releases</a>
