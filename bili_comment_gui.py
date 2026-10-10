@@ -513,9 +513,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": WORKER_WARNING})
                 return
             args = TASK_PREFIX + ["fetch"]
+            full = bool(body.get("full"))
+            if full:
+                args.append("--full")
             fetch_proc = spawn(args, FETCH_PID)
             self._json({"ok": True, "pid": fetch_proc.pid,
-                        "incremental": LIVE.exists() and live_complete()})
+                        "incremental": LIVE.exists() and live_complete() and not full})
 
         elif self.path == "/api/login":
             if task_alive(login_proc, LOGIN_PID):
@@ -629,6 +632,7 @@ display:flex;gap:10px;align-items:flex-start}
   <div class="hbtns">
     <button id="btn-login" title="手机 B 站 App 扫码，二维码图片会自动弹出">扫码登录</button>
     <button id="btn-fetch" title="重新拉取：本地清单完整时增量补新评论（几分钟）；首次或上次中断则全量拉档案。已删条目会从实时数据清除（历史在全量快照可回看）">重新拉取</button>
+    <button id="btn-fetch-full" title="完整翻一遍 AICU 档案（约 30-45 分钟）：能发现晚收录的旧评论——增量模式够不到的那种。日常用「重新拉取」即可，这个隔一阵子用一次">完整重拉</button>
     <button id="btn-full" title="查看全量历史：含已删评论（状态为当前已知），删除后仍可回看">查看全量评论</button>
   </div>
 </header>
@@ -870,6 +874,21 @@ $('btn-fetch').onclick = async ()=>{
       : '拉取已开始：全量拉取 AICU 档案（约每 1700 条需 1 小时）——完成后实时数据只留现存评论，已删条目清除（历史在全量快照）')
       + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——已抓到的不会丢';
     toast(msg, 8000);
+  } else {
+    toast(j.error||'失败', 6500);
+  }
+};
+
+$('btn-fetch-full').onclick = async ()=>{
+  const r = await fetch('/api/fetch', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({full:true})});
+  const j = await r.json();
+  if(j.ok){
+    fetching = true;
+    toast('全量拉取已开始：完整翻一遍 AICU 档案（约每 1700 条需 1 小时）——'
+      + '能捞出晚收录的旧评论（增量模式够不到的那种）'
+      + '。进度在底部显示，可随时停止；关闭窗口甚至关机都没关系——已抓到的不会丢', 8000);
   } else {
     toast(j.error||'失败', 6500);
   }
