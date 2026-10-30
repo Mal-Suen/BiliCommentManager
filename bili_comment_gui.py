@@ -21,6 +21,7 @@ python bili_comment_gui.py
 import ctypes
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -70,6 +71,21 @@ file_lock = threading.Lock()
 delete_proc = None
 fetch_proc = None
 login_proc = None
+
+# ---------- CSRF 防护 ----------
+# 本服务原先无任何鉴权，任意恶意网页可跨站以 simple request（text/plain 直发）
+# 触发写端点批量删除评论。修复：一次性 token＋Host 校验，双层拦截。
+#   · Host 校验：非本机地址直接 403，挡 DNS rebinding 读取面（GET 也校验）。
+#   · token 校验：写端点必须带自定义头 X-Auth-Token 且值一致，否则 403。
+#     自定义头使跨站请求必触发 CORS 预检且预检必失败，同时挡住 simple request。
+# token 每次启动随机生成，只注入自家页面，不落盘、不打印。
+AUTH_TOKEN = secrets.token_urlsafe(24)
+
+
+def _host_allowed(host):
+    """Host 头必须是本机回环地址（可带端口），否则视为跨源请求直接拒绝。"""
+    hostname = (host or "").strip().split(":", 1)[0].strip("[]").lower()
+    return hostname in ("127.0.0.1", "localhost")
 
 
 # ---------- 文件读写 ----------
@@ -351,9 +367,30 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj):
         self._send(200, json.dumps(obj, ensure_ascii=False))
 
+    def _check_host(self):
+        """Host 头校验：非 127.0.0.1[:port]／localhost[:port] 的请求直接 403。"""
+        if _host_allowed(self.headers.get("Host")):
+            return True
+        self._send(403, "forbidden", "text/plain; charset=utf-8")
+        return False
+
+    def _check_token(self):
+        """写端点专用：先过 Host 校验，再比对 X-Auth-Token 与一次性 token。"""
+        if not self._check_host():
+            return False
+        if secrets.compare_digest(self.headers.get("X-Auth-Token") or "", AUTH_TOKEN):
+            return True
+        self._send(403, "forbidden", "text/plain; charset=utf-8")
+        return False
+
     def do_GET(self):
+        if not self._check_host():   # 只读端点只做 Host 校验，页面首次加载可用
+            return
         if self.path == "/" or self.path.startswith("/index"):
-            self._send(200, HTML_PAGE, "text/html; charset=utf-8")
+            # token 注入：HTML_PAGE 为 r-string，用占位符＋运行时替换，
+            # 每次请求都注入当前进程的 token（页面与 token 同生命周期）
+            page = HTML_PAGE.replace("__AUTH_TOKEN__", AUTH_TOKEN)
+            self._send(200, page, "text/html; charset=utf-8")
         elif self.path.startswith("/api/data"):
             if "view=full" in self.path:
                 live = load_json(LIVE)
@@ -412,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global delete_proc, fetch_proc, login_proc
+        if not self._check_token():  # 全部写端点统一鉴权：Host＋X-Auth-Token
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -675,6 +714,8 @@ display:flex;gap:10px;align-items:flex-start}
 <div id="modal-root"></div>
 
 <script>
+// 写操作鉴权令牌：服务端注入（见 do_GET 的占位符替换），跨站页面拿不到
+const AUTH_TOKEN = "__AUTH_TOKEN__";
 const PER = 100;
 let DATA = [], STATS = {}, page = 1, lastSig = '', deleting = false, fetching = false, fullView = false;
 
@@ -820,7 +861,8 @@ async function loadData(){
     banner.style.display = 'none';
   }
   if(!j.stats.backup_at && j.stats.total && !fullView){
-    fetch('/api/snapshot', {method:'POST'});  // 首次自动快照
+    fetch('/api/snapshot', {method:'POST',
+      headers:{'X-Auth-Token':AUTH_TOKEN}});  // 首次自动快照
     toast('已自动创建全量快照');
   }
 }
@@ -829,7 +871,7 @@ async function toggleKeep(rpid, value){
   if(fullView){ toast('全量视图为只读快照，请先点「返回实时视图」再操作'); return; }
   if(deleting){ toast('删除进行中，暂不能修改保留标记'); return; }
   const r = await fetch('/api/keep', {method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json','X-Auth-Token':AUTH_TOKEN},
     body: JSON.stringify({rpid, value})});
   const j = await r.json();
   if(!j.ok){ toast(j.error||'操作失败'); return; }
@@ -845,7 +887,8 @@ $('f-kw').oninput = ()=>{ clearTimeout(kwTimer);
   kwTimer = setTimeout(()=>{ page=1; renderTable(); }, 300); };
 
 $('btn-login').onclick = async ()=>{
-  const r = await fetch('/api/login', {method:'POST'});
+  const r = await fetch('/api/login', {method:'POST',
+    headers:{'X-Auth-Token':AUTH_TOKEN}});
   const j = await r.json();
   toast(j.ok ? '二维码图片已弹出，用手机 B 站 App 扫码并确认登录'
              : (j.error||'失败'), 4000);
@@ -865,7 +908,8 @@ $('btn-full').onclick = async ()=>{
 };
 
 $('btn-fetch').onclick = async ()=>{
-  const r = await fetch('/api/fetch', {method:'POST'});
+  const r = await fetch('/api/fetch', {method:'POST',
+    headers:{'X-Auth-Token':AUTH_TOKEN}});
   const j = await r.json();
   if(j.ok){
     fetching = true;
@@ -881,7 +925,7 @@ $('btn-fetch').onclick = async ()=>{
 
 $('btn-fetch-full').onclick = async ()=>{
   const r = await fetch('/api/fetch', {method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json','X-Auth-Token':AUTH_TOKEN},
     body: JSON.stringify({full:true})});
   const j = await r.json();
   if(j.ok){
@@ -926,7 +970,7 @@ async function doDelete(){
   const body = {from: $('f-from').value || null, to: $('f-to').value || null,
     type: $('f-type').value, keyword: $('f-kw').value.trim() || null};
   const r = await fetch('/api/delete', {method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json','X-Auth-Token':AUTH_TOKEN},
     body: JSON.stringify(body)});
   const j = await r.json();
   if(!j.ok){ toast(j.error||'启动失败'); return; }
@@ -937,7 +981,8 @@ async function doDelete(){
 $('btn-stop').onclick = async ()=>{
   const label = $('btn-stop').textContent;
   if(!confirm(`确定${label}？已完成的部分不受影响。`)) return;
-  const r = await fetch('/api/stop', {method:'POST'});
+  const r = await fetch('/api/stop', {method:'POST',
+    headers:{'X-Auth-Token':AUTH_TOKEN}});
   const j = await r.json();
   toast(j.ok ? `已停止${j.stopped || '任务'}` : (j.error||'失败'));
 };
@@ -980,7 +1025,8 @@ async function poll(){
     } else if(fetching){
       fetching = false;
       if(f.done){
-        fetch('/api/snapshot', {method:'POST'});  // 拉取完成，新评论并入全量快照
+        fetch('/api/snapshot', {method:'POST',
+          headers:{'X-Auth-Token':AUTH_TOKEN}});  // 拉取完成，新评论并入全量快照
         toast('拉取完成：新评论已并入全量快照');
         showFail(null);
       } else {

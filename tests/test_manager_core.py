@@ -414,7 +414,7 @@ def test_comment_exists_by_12006(mgr_env):
     c = make_comment(1)
     assert mgr.comment_exists(gone, c) is False      # 12006 → 已删
     assert mgr.comment_exists(present, c) is True    # code=0 → 仍存在
-    assert mgr.comment_exists(broken, c) is True     # 网络异常保守当作存在
+    assert mgr.comment_exists(broken, c) is None     # 网络异常状态未知，调用方保持已删待复核
 
 
 def test_verify_targets_selection(mgr_env):

@@ -30,7 +30,8 @@ def _get(base, path):
 def _post(base, path, body):
     req = urllib.request.Request(
         base + path, data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json",
+                 "X-Auth-Token": gui.AUTH_TOKEN}, method="POST")
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read().decode("utf-8"))
 

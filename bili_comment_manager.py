@@ -706,14 +706,15 @@ def comment_exists(session, c):
     """只读核验：B 站 reply/reply 接口查评论是否仍存在。
 
     已删返回 code=12006「没有该评论」，现存返回 code=0（根评论与楼中楼、
-    视频/动态/专栏全类型实测一致）；网络异常时保守当作仍存在，交给重删兜底。"""
+    视频/动态/专栏全类型实测一致）；网络异常返回 None（状态未知），
+    调用方保持已删标记待下次核验，只有明确「仍存在」才回退重删。"""
     url = (f"https://api.bilibili.com/x/v2/reply/reply"
            f"?type={c['type']}&oid={c['oid']}&root={c['rpid']}&pn=1&ps=1")
     try:
         r = session.get(url, timeout=20)
         return r.status_code == 200 and r.json().get("code") == 0
     except Exception:
-        return True
+        return None
 
 
 def _terminate(uid, comments, kind, detail):
@@ -814,14 +815,23 @@ def cmd_delete(args):
         return
     # ---------- 核验：逐条向 B 站确认删除生效，未生效的自动重删 ----------
     round_deleted = [c for c in pending if c.get("deleted")]
-    verified = retry_ok = retry_fail = 0
+    verified = retry_ok = retry_fail = unverified = 0
     failed_verify = []
     if round_deleted:
         log(f"开始核验：向 B 站逐条确认本轮删除的 {len(round_deleted)} 条已生效"
             "（只读查询，约每条 1 秒）")
         for i, c in enumerate(round_deleted, 1):
             heal_pid_file("delete")
-            if comment_exists(session, c):
+            exists = comment_exists(session, c)
+            if exists is None:
+                # 核验请求本身网络异常：查不到真实状态，不回退已删标记，
+                # 留待下次核验再查（回退会让已删评论被反复重删并永久标失败）
+                c["error"] = "核验网络异常，待下次核验"
+                unverified += 1
+                log(f"[核验 {i}/{len(round_deleted)}] 网络异常 rpid={c['rpid']}"
+                    "｜状态未知，保持已删待复核")
+                save_data(uid, comments)
+            elif exists:
                 failed_verify.append(c)
                 log(f"[核验 {i}/{len(round_deleted)}] 未生效 rpid={c['rpid']}"
                     f"｜{preview(c['message'])}")
@@ -891,6 +901,7 @@ def cmd_delete(args):
     save_data(uid, comments)
     log(f"本轮结束：成功删除 {ok} 条，失败 {fail} 条；"
         f"核验确认 {verified} 条，未生效重删成功 {retry_ok} 条、仍失败 {retry_fail} 条"
+        + (f"；核验网络异常待复核 {unverified} 条" if unverified else "")
         + (f"；失败明细见 {DATA_FILE} 中 error 字段" if fail or retry_fail else ""))
 
 
